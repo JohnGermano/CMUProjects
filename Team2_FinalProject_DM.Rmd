@@ -1,0 +1,2437 @@
+---
+title: "Biases in Predicting Recidivism: How COMPAS Failed and Alternate Models -- Team 2"
+author: "Daniel (@sangwony), John (@jgermano), Jose (@jasalomo), Kay (@qzhang2) -- Team 2"
+date: "5/14/2020"
+output: 
+  rmdformats::readthedown
+---
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE, results='hide'}
+library(tidyverse)
+library(ggplot2)
+library(ISLR)
+library(partykit)
+library(caret)
+library(rpart)
+library(randomForest)
+library(pROC)
+library(DMwR)
+library(gbm)
+library(ROSE)
+library(PerformanceAnalytics)
+library(knitr)
+library(reticulate)
+library(gridExtra)
+library(glmnet)
+library(Boruta)
+library(klaR)
+library(boot)
+library(plyr)
+library(dplyr)
+library(tree)    # For the tree-fitting 'tree' function
+library(leaps)  # needed for regsubsets
+library(MASS)
+library(ROCR)   # to construct ROC curve
+library(e1071)
+library(boot)    # for cv.glm
+library(gam)
+library(class)
+library(naivebayes)
+library(InformationValue)
+library(rmdformats)
+
+options(scipen = 4)
+```
+
+# Abstract
+
+Northpointe created a recidivism measure aimed at classifying individuals as low and high risk. However, their models and measures are biased against Black defendants. Our group aimed to eliminate this bias by analyzing 8 different classification models. We found that Quadratic Discriminant Models yielded the best misclassification rates, but were still biased. We discuss that QDA did very well in capturing the trends in the data; however, we discuss the fact that the justice department's dataset may be skewed in a way that leads data scientists to believe models are biased.
+
+# Introduction and Description
+
+We decided to look at the ProPublica COMPAS data set. COMPAS is a scoring model developed by Northpointe that is used to predict the likelihood that a criminal will recidivate. The use of such a model is typically used to determine bail amounts and to determine the placement of correctional officers / how to treat the offenders (Angwin et al. 2016). In 2016, the analysis by ProPublica uncovered that, despite being marketed as fair across all gender and race groups, the COMPAS algorithm incorrectly flagged certain groups as recidivating more often. Specifically, they found that Black defendants (who did not recidivate) were flagged 45% of the time, but only 23% of White defendants were flagged (Angwin et al. 2016). Further, 48% of White defendants were marked as low risk, compared to 28% of Black defendants. Even after controlling for other variables, they found that Black defendants were 77% more likely to be flagged for a **violent** crime than White defendants (Angwin et al. 2016). It is clear that the COMPAS algorithm is biased toward Black defendants, which has a number of negative implications for them that White defendants are less likely to experience. Our group’s goal is to find a classification algorithm that correctly predicts recidivism, while having higher accuracy, and being less biased towards racial groups, than the COMPAS algorithm.
+
+We chose to look at classification accuracy because the issue with COMPAS was that it had high bias particularly among Black defendants. Higher classification rates of recidivism and violent recidivism towards Black compared to White defendants led us to believe that this was a misclassification problem -- Black defendants were being misclassified while White defendants were not. We also observed and calculated the Concordance rate of our chosen model. Concordance is defined as "probability that a randomly selected subject who experienced the outcome will have a higher predicted probability of having the outcome occur than a randomly selected subject who did not experience the outcome" (Logan 2013). Northpointe used concordance as the accuracy measure of their cox model, and we believed that we could only compare predictive accuracy in our model, with COMPAS, via concordance.
+
+We begin our report by discussing Exploratory Data Analysis.
+
+# Exploratory Data Analysis
+
+We produced a number of plots and statistical tests to determine the distributions of the ProPublica data set. To remain constant across both of the analyses, we used their provided database, and eliminated the exact observations that ProPublica did. We also deleted several other columns because our group determined they would not be useful predictors (i.e., first and last name) for recidivism. We also deleted COMPAS columns as we are not interested in using COMPAS data -- we’re trying to create a better model separate from COMPAS. In this exploratory analysis, we found the following:
+
+```{r}
+
+#Read in Recidivism Data 
+data = read.csv("recid_data.csv")
+
+#Data Preparation
+data <- mutate(data, sex = as.factor(sex)) %>%
+  within(sex <- relevel(sex, ref = 2)) %>%
+  mutate(race = as.factor(race)) %>%
+  within(race <- relevel(race, ref = 3)) %>%
+  mutate(age_cat = as.factor(age_cat)) %>%
+  mutate(c_charge_degree = as.factor(c_charge_degree)) %>%
+  mutate(is_recid = as.factor(is_recid)) %>%
+  mutate(is_violent_recid = as.factor(is_violent_recid))
+  
+#Removing Extraneous Info
+data = subset(data, select = -c(X, person_id, age_cat, dob, name, first, last,
+                                c_arrest_date, c_offense_date, r_case_number,
+                                compas_screening_date, r_offense_date, r_jail_in, r_jail_out, vr_case_number,
+                                vr_offense_date, decile_score, num_r_cases, c_days_from_compas,
+                                r_charge_degree, r_days_from_arrest, vr_charge_degree))
+
+#Remove Problem c_charge_degree values
+x1 = which(data$c_charge_degree=="(CO3)")
+data = data[-x1,]
+
+x2 = which(data$c_charge_degree=="(CT)")
+data = data[-x2,]
+
+x3 = which(data$c_charge_degree=="(TCX)")
+data = data[-x3,]
+
+x4 = which(data$c_charge_degree=="(X)")
+data = data[-x4,]
+
+x5 = which(data$c_charge_degree=="(F5)")
+data = data[-x5,]
+
+x6 = which(data$c_charge_degree=="(F6)")
+data = data[-x6,]
+
+x7 = which(data$c_charge_degree=="(NI0)")
+data = data[-x7,]
+
+rm(list=setdiff(ls(), "data"))
+```
+
+## Correlation between Variables
+```{r, fig.height = 8, fig.width = 8}
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...) {
+    usr <- par("usr"); on.exit(par(usr))
+    par(usr = c(0, 1, 0, 1))
+    r <- abs(cor(x, y, use = "complete.obs"))
+    txt <- format(c(r, 0.123456789), digits = digits)[1]
+    txt <- paste0(prefix, txt)
+    if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+    text(0.5, 0.5, txt, cex = cex.cor * r)
+}
+
+pairs(data[,c("age", "juv_fel_count","juv_misd_count","juv_other_count", "priors_count","is_recid","is_violent_recid","count.prior.jail","count.prior.prison","timeinjail","timeinprison" )], lower.panel = panel.cor)
+
+```
+
+> We did not believe that there were any strong collinearity concerns in this data. We defined strong collinearity as if the correlation was .70 or greater. Via our pairs plot, we did not find any strong concerns, and as such, left all 14 of our variables in the data set.
+
+## EDA -- Two Year Nonviolent Recidivism
+```{r}
+#Sex
+
+ggplot(data, aes(x = sex, fill = as.factor(is_recid))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Sex') +
+  ylab('Number of People in Bin')
+
+data$is_recid <- as.numeric(data$is_recid)
+data$is_recid[data$is_recid == 1] <- 0
+data$is_recid[data$is_recid == 2] <- 1
+
+t.test(is_recid ~ sex, data)
+
+```
+
+> A greater proportion of males (M = .353) recidivate than females (M = .240), and this is statistically significant at the .05 level.
+
+```{r}
+#Race
+ggplot(data, aes(x = race, fill = as.factor(is_recid))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Race') +
+  ylab('Number of People in Bin')
+
+summary(aov(is_recid ~ race, data))
+
+```
+
+```{r, echo=FALSE}
+kable(data %>%
+  group_by(race) %>%
+  summarize_at(vars(c("is_recid")), mean), digits = 2)
+```
+
+```{r}
+summary(aov(is_recid ~ race, data[data$race != "African-American",]))
+```
+
+> African-Americans have the greatest proportion of individuals recidivating (M = .390) than other races. This is statistically significant at the .05 level. If we remove African-Americans from the data set, this no longer is statistically significant.
+
+```{r}
+#Age
+ggplot(data, aes(x = age, fill = as.factor(is_recid))) + geom_histogram(position = 'fill') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Age Category') +
+  ylab('Number of People in Bin') 
+```
+
+> Younger people appear to be more likely to recidivate more than older people.
+
+```{r}
+#Priors Count
+ggplot(data, aes(x = priors_count, fill = as.factor(is_recid))) + geom_histogram(position = 'fill') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Number of Priors') +
+  ylab('Probability of Recidivating')
+
+
+#Juvenile Counts
+juv.fel.plot <- data %>% dplyr::group_by(juv_fel_count) %>% dplyr::summarize(mean = mean(is_recid)) %>%
+  ggplot(aes(x = as.factor(juv_fel_count), y = mean)) + 
+  geom_bar(stat = 'identity') +
+  ylab('Proportion Recidivated') +
+  xlab('Number of Juvenile Felonies')
+
+juv.misd.plot <- data %>% dplyr::group_by(juv_misd_count) %>% dplyr::summarize(mean = mean(is_recid)) %>%
+  ggplot(aes(x = as.factor(juv_misd_count), y = mean)) + geom_bar(stat = 'identity') +
+  ylab('Proportion Recidivated') +
+  xlab('Number of Juvenile Misdemeanors')
+
+juv.other.plot <- data %>% dplyr::group_by(juv_other_count) %>% dplyr::summarize(mean = mean(is_recid)) %>%
+  ggplot(aes(x = as.factor(juv_other_count), y = mean)) + geom_bar(stat = 'identity') +
+  ylab('Proportion Recidivated') +
+  xlab('Number of Juvenile Others')
+
+grid.arrange(juv.fel.plot, juv.misd.plot, juv.other.plot, ncol = 2)
+```
+
+> It appears that the higher the number of priors, the more likely a person is to recidivate. There also appears to be no real full relationship between the number of juvenile priors and probability of recidivating.
+
+```{r}
+#Time in Jail / Prison
+jail.plot <- ggplot(data, aes(x = timeinjail, fill = as.factor(is_recid))) + geom_histogram(position = 'fill') +
+  xlab('Median Days in Jail') +
+  ylab('Probability of Recidivating') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes"))
+
+prison.plot <- ggplot(data, aes(x = timeinprison, fill = as.factor(is_recid))) + geom_histogram(position = 'fill') +
+  xlab('Median Days in Prison') +
+  ylab('Probability of Recidivating') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes"))
+
+grid.arrange(jail.plot, prison.plot)
+
+data$is_recid <- as.factor(data$is_recid)
+```
+
+> Similarly, there appears to be no convincing relationship between the number of days spent in prison / jail and recidivating.
+
+## EDA -- Violent Recidivism
+```{r}
+data$is_violent_recid <- as.numeric(data$is_violent_recid)
+data$is_violent_recid[data$is_violent_recid == 1] <- 0
+data$is_violent_recid[data$is_violent_recid == 2] <- 1
+
+#Sex
+
+ggplot(data, aes(x = sex, fill = as.factor(is_violent_recid))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Violent Recidivated", labels = c("No", "Yes")) +
+  xlab('Sex') +
+  ylab('Number of People in Bin')
+
+t.test(is_violent_recid ~ sex, data)
+
+```
+
+> Males (M = .085) violently recidivate more often than females (M = .047) and this is statistically significant at the .05 level.
+
+```{r}
+#Race
+ggplot(data, aes(x = race, fill = as.factor(is_violent_recid))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Violent Recidivated", labels = c("No", "Yes")) +
+  xlab('Race') +
+  ylab('Number of People in Bin')
+
+summary(aov(is_violent_recid ~ race, data))
+
+```
+
+```{r, echo=FALSE}
+kable(data %>%
+        group_by(race) %>%
+        summarize_at(vars(c("is_violent_recid")), mean), digits = 2)
+```
+
+```{r}
+summary(aov(is_violent_recid ~ race, data[data$race != "African-American",]))
+```
+
+> African Americans (M = .10) and Native Americans (M = .14) violently recidivate more often than other races, and this is statistically significant at the .05 level. If we remove African-Americans from the data set, these differences are no longer statistically significant.
+
+```{r}
+#Age Category
+ggplot(data, aes(x = age, fill = as.factor(is_violent_recid))) + geom_histogram(position = 'fill') +
+  scale_fill_discrete(name = "Violent Recidivated", labels = c("No", "Yes")) +
+  xlab('Age Category') +
+  ylab('Number of People in Bin') 
+```
+
+> Younger individuals appear more likely to violently recidivate than older individuals
+
+```{r}
+#Priors Count
+ggplot(data, aes(x = priors_count, fill = as.factor(is_violent_recid))) + geom_histogram(position = 'fill') +
+  scale_fill_discrete(name = "Violent Recidivated", labels = c("No", "Yes")) +
+  xlab('Number of Priors') +
+  ylab('Probability of Recidivating')
+
+
+#Juvenile Counts
+juv.fel.plot <- data %>% dplyr::group_by(juv_fel_count) %>% dplyr::summarize(mean = mean(is_violent_recid)) %>%
+  ggplot(aes(x = as.factor(juv_fel_count), y = mean)) + geom_bar(stat = 'identity') +
+  ylab('Proportion Recidivated') +
+  xlab('Number of Juvenile Felonies')
+
+juv.misd.plot <- data %>% dplyr::group_by(juv_misd_count) %>% dplyr::summarize(mean = mean(is_violent_recid)) %>%
+  ggplot(aes(x = as.factor(juv_misd_count), y = mean)) + geom_bar(stat = 'identity') +
+  ylab('Proportion Recidivated') +
+  xlab('Number of Juvenile Misdemeanors')
+
+juv.other.plot <- data %>% dplyr::group_by(juv_other_count) %>% dplyr::summarize(mean = mean(is_violent_recid)) %>%
+  ggplot(aes(x = as.factor(juv_other_count), y = mean)) + geom_bar(stat = 'identity') +
+  ylab('Proportion Recidivated') +
+  xlab('Number of Juvenile Others')
+
+grid.arrange(juv.fel.plot, juv.misd.plot, juv.other.plot, ncol = 2)
+```
+
+> The higher the number of priors, the more likely it appears that a person is to violently recidivate. The higher the number of juvenile priors, the more likely it appears that a person is to violently recidivate.
+
+```{r}
+#Time in Jail / Prison
+jail.plot <- ggplot(data, aes(x = timeinjail, fill = as.factor(is_violent_recid))) + geom_histogram(position = 'fill') +
+  xlab('Median Days in Jail') +
+  ylab('Probability of Recidivating') +
+  scale_fill_discrete(name = "Violent Recidivated", labels = c("No", "Yes"))
+
+prison.plot <- ggplot(data, aes(x = timeinprison, fill = as.factor(is_violent_recid))) + geom_histogram(position = 'fill') +
+  xlab('Median Days in Prison') +
+  ylab('Probability of Recidivating') +
+  scale_fill_discrete(name = "Violent Recidivated", labels = c("No", "Yes"))
+
+grid.arrange(jail.plot, prison.plot)
+
+data$is_violent_recid <- as.factor(data$is_violent_recid)
+```
+
+> There is no strong observable relationship between the number of days spent in prison and jail on the likelihood of violently recidivating.
+
+# Methodology
+
+For our model selection, we analyzed the use of 8 different models (for both Two Year and Violent Recidivism), resulting in a total of 16 different models that we explored. We used the following models in our exploration of the data:
+
+1. Logistic Regression
+2. Naive Bayes Classifier
+3. Linear Discriminant Analysis (LDA)
+4. Quadratic Discriminant Analysis (QDA)
+5. Random Forest
+6. Neural Network
+7. K-Nearest Neighbors
+8. Linear Regression.
+
+## Summary
+Each group member was assigned two models. We decided two look at the two models for both Two-Year Recidivism and Violent Recidivism. In total, each person created 4 different models, and compared each of their two models within their own analysis, and across each group members analysis. Each group member also used their corresponding model's feature selection, or another feature selection that they thought fit their model the best. In the end, we had 16 models that we compared, with the QDA model having the lowest misclassification rate. This QDA model is the model that we base our predictions and bias findings on.
+
+We start with Logistic Regression and Naive Bayes. 
+
+## JOHN -- Logistic Regression and Naive Bayes Classifier
+
+Before I started, I removed problematic values from the ‘c_charge_degree’ variable. When splitting into training and test data sets for using the Validation Set approach, the trained models would encounter observations of the variable it had never seen before. This was always due to only a single person having a specific c_charge_degree, so we thought it best to remove them.
+
+We settled on the use of 14 variables in our data set. For my section, I did not want to assume that using all 14 variables would give the best model. In my research, I found that using best subsets, forwards selection, and backwards selection is not appropriate in today’s world. Flom and Castell (2013) suggest that the use of these best subset selections results in small standard errors, narrow confidence intervals, and they can exacerbate any collinearity problems. For something as important as predicting recidivism, I believed the use of LASSO modeling and feature selection would be appropriate, and this is indeed what Flom and Castell recommend for model selection. I also utilized the r package `boruta`, which finds the most important predictors for the model via Random Forest. Use of these predictors can result in overfitting, but they are included for completeness. As such, I usually fit a full model, model with lasso-selected features, and a model with boruta-selected features, and all three would be compared.
+
+In the analysis, I took advantage of the validation set approach, but also calculated models based on cross validation using the `caret` package. Accuracy measures were better (i.e., higher) in the CV models. However, both the Validation Set Approach and the Cross Validation model validation methods selected the same models for both Two Year and Violent Recidivism.
+
+### Two Year Recidivism
+
+#### Preparing Lasso Feature Selection
+```{r}
+# Define x matrix and y vector for use with glmnet
+x <- model.matrix(is_recid~., data)[,-1]
+y <- data$is_recid
+grid=10^seq(10,-2, length =100) #Need a preselected grid of lambdas -- glmnet won't work with a single lambda value
+```
+
+#### Feature Selection Two Year Recidivism
+```{r, cache = TRUE}
+
+# Split data into test and train
+train <- sample(1:nrow(x), nrow(x)/2)
+test <- (-train)
+y.test <- y[test]
+
+cv.logit <- cv.glmnet(x[train,], y[train], alpha = 1, family = "binomial")
+
+plot(cv.logit)
+
+#Logistic Lasso Model
+lasso.model <- glmnet(x[train, ], y[train], alpha = 1, family = "binomial", lambda = grid)
+
+lasso.coef <- predict(lasso.model, type = 'coefficients', s = cv.logit$lambda.min)
+
+lasso.coef[lasso.coef != 0] #Includes Sex, Race, age, juv_misd_count, priors_count, is_violent_recid, count.prior.jail
+
+lasso.preds <- predict(lasso.model, s = cv.logit$lambda.min, newx = x[test, ], type = "response")
+
+#Boruta Feature Selection
+y <- data$is_recid
+x <- subset(data, select = -c(is_recid))
+boruta_output <- Boruta(x, y)
+
+boruta_output$finalDecision #All Variables, except c_charge_degree are important
+```
+
+> I made use of both a Logistic Lasso and Boruta feature selection package to determine the important predictors to include in a model. The Boruta Package utilizes the Random Forest to select the most important predictors. The Logistic Lasso method only made use of Sex, Race, Age, juv_misd_count, priors_count, is_violent_recid, and count.prior.jail. The Boruta method selected all variables, except c_charge_degree; however, caution with this model is important due to risk of overfitting.
+
+#### Predicting Two Year Recidivism -- Logistic Regression
+```{r}
+#Two Year Recidivism -- Logistic and Naive Bayes
+# Define x matrix and y vector for use with glmnet
+x <- model.matrix(is_recid~., data)[,-1]
+y <- data$is_recid
+grid=10^seq(10,-2, length =100) #Need a preselected grid of lambdas -- glmnet won't work with a single lambda value
+
+#Create Sample Sets
+
+train <- sample(1:nrow(data), nrow(data)/2)
+
+data.train <- data[train, ]
+data.test <- data[-train, ]
+
+#Train Logistic Regression, with features selected by Boruta via Importance
+logit.all <- glm(is_recid~. - c_charge_degree, data = data.train, family = "binomial")
+
+logit.all.probs <- logit.all %>% predict(data.test, type = "response")
+log.all.pred <- rep("No Recid", nrow(data.test))
+log.all.pred[logit.all.probs > .5] <- "Yes Recid"
+
+log.all.table <- table(log.all.pred, data.test$is_recid)
+log.all.error <- (log.all.table[1, 2] + log.all.table[2, 1])/nrow(data.test)
+
+#Train Normal Logistic Regression, with features selected by Logistic Lasso
+
+#Predict Logistic Probabilities
+logit <- glm(is_recid~sex + race + age + juv_misd_count + priors_count +
+               is_violent_recid + count.prior.jail, data = data.train, family = "binomial")
+
+logit.probs <- logit %>% predict(data.test, type = "response")
+
+#Create Tables for Logistic and Lasso-Logistic Models
+log.pred <- rep("No Recid", nrow(data.test))
+lass.pred <- rep("No Recid", nrow(data.test))
+log.pred[logit.probs > .5] <- "Yes Recid"
+lass.pred[lasso.preds > .5] <- "Yes Recid"
+
+#Find Error Rates
+log.table <- table(log.pred, data.test$is_recid)
+log.error <- (log.table[1, 2] + log.table[2, 1])/nrow(data.test)
+
+lass.table <- table(lass.pred, data.test$is_recid)
+lass.error <- (lass.table[1, 2] + lass.table[2, 1])/nrow(data.test)
+
+#Compare Logistic Models
+log.error < log.all.error
+
+#We will keep the logistic regression
+log.error < lass.error
+```
+
+> Via comparison of the Logistic Lasso misclassification error, and the Logistic Regression misclassification error, I find that the logistic regression has the lowest misclassification rate.
+
+#### Predicting Two Year Recidivism -- Naive Bayes Classifier
+```{r, warning=FALSE}
+#Preparing Naive Bayes
+
+#Naive Bayes -- Features Selected by Lasso
+nb.model <- NaiveBayes(data = data.train, is_recid~sex + race + age + juv_misd_count + priors_count +
+               is_violent_recid + count.prior.jail, usekernel = TRUE)
+nb.pred <- nb.model %>% predict(data.test)
+
+#Naive Bayes -- Features selected by Boruta
+nb.all.model <- NaiveBayes(data = data.train, is_recid~. - c_charge_degree, usekernel = TRUE)
+nb.pred.all <- nb.all.model %>% predict(data.test)
+  
+#Calculate Naive Bayes Error
+nb.table <- table(nb.pred$class, data.test$is_recid)
+nb.error <- (nb.table[1, 2] + nb.table[2, 1])/nrow(data.test)
+
+nb.table.all <- table(nb.pred.all$class, data.test$is_recid)
+nb.error.all <- (nb.table.all[1, 2] + nb.table.all[2, 1])/nrow(data.test)
+
+nb.error < nb.error.all #Will keep the less complicated model
+
+#We will keep logistic regression rather than Naive Bayes, although they are very close!
+log.error < nb.error
+```
+
+> I found that the Naive Bayes model with features selected by the logistic lasso had the best error out of both Naive Bayes models, but the Logistic model with lasso selected features had the best misclassification rate out of all of the models in this section.
+
+#### 10-Fold CV Error for Two Year Recidivism
+```{r, warning=FALSE}
+control <- trainControl(method = "cv")
+
+nb.lasso.cv <- 1 - train(is_recid~sex + race + age + juv_misd_count + 
+                 priors_count + is_violent_recid + count.prior.jail, data = data, trControl = control, method =
+                   'naive_bayes')$results[2, "Accuracy"]
+
+nb.boruta.cv <- 1 - train( is_recid~. - c_charge_degree, data = data, trControl = control, 
+                           method = 'naive_bayes')$results[2, "Accuracy"]
+
+logit.boruta.cv <- 1 - train(is_recid~. - c_charge_degree, data = data, trControl = control,
+                         method = 'glm', family = 'binomial')$results[1, "Accuracy"]
+
+logit.lasso.cv <- 1 - train(is_recid~sex + race + age + juv_misd_count + priors_count +
+               is_violent_recid + count.prior.jail, data = data, trControl = control, method = 'glm',
+               family = 'binomial')$results[1, "Accuracy"]
+
+lasso.cv <- cv.glmnet(x, y, alpha = 1, lambda = grid, family = "binomial", type.measure = "class")$cvm[100]
+
+which.min(c(nb.lasso.cv, nb.boruta.cv, logit.boruta.cv, logit.lasso.cv, lasso.cv)) 
+#CV confirms Logistic Regression with Lasso-Selected Coefficients 
+```
+
+> The Cross Validation finds that, just like Validation Set Approach, that the Logistic Regression with Lasso-Selected Coefficients results in the best misclassification rate.
+
+#### ROC Curve with Selected Model - Two Year Recidivism
+```{r}
+log.preds <- logit %>% predict(data.test, type = "response")
+log.perf <- prediction(log.preds, data.test$is_recid)
+roc.perf <- performance(log.perf, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(log.perf, measure = "auc")
+auc.train <- auc.train@y.values
+
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .25, y = .65 ,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+```
+
+> The ROC curve shows that this is a good model for the classification of two year recidivism.
+
+#### Findings & Bias Analysis
+```{r}
+#Two Year Recid
+
+data.test$predictions <- log.pred
+data.test$predictions[data.test$predictions == "No Recid"] <- 0
+data.test$predictions[data.test$predictions == "Yes Recid"] <- 1
+data.test$predictions <- as.numeric(data.test$predictions)
+
+#Race
+race.r <- ggplot(data.test, aes(x = race, fill = as.factor(predictions))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Race') +
+  ylab('Number of People in Bin')
+
+summary(aov(predictions ~ race, data.test))
+
+kable(data.test %>%
+  group_by(race) %>%
+  summarize_at(c("predictions"), mean), digits = 2)
+
+summary(aov(predictions ~ race, data.test[data.test$race != "African-American",]))
+
+#Age
+age.r <- ggplot(data.test, aes(x = age, fill = as.factor(predictions))) + geom_histogram(position = "fill") +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Age') +
+  ylab('Number of People in Bin')
+
+#Sex
+sex.r <- ggplot(data.test, aes(x = sex, fill = as.factor(predictions))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Sex') +
+  ylab('Number of People in Bin')
+
+t.test(predictions ~ sex, data.test)
+
+kable(data.test %>%
+  group_by(sex) %>%
+  summarize_at(c("predictions"), mean), digits = 2)
+
+grid.arrange(race.r, age.r, sex.r, ncol = 2)
+```
+
+For this variable, I fit 3 models -- Logistic Lasso, regular logistic with lasso-selected predictors, and regular logistic with boruta-selected predictors. A full model is not in this report because the accuracy was the exact same as the boruta selected, and the boruta was a (slightly) less complicated model.
+
+I found that the logistic model with lasso-selected predictors resulted in better accuracy (A = .179 vs. .181). This was also better than the logistic lasso (A = .179 vs. .393). 
+
+A Naive Bayes model was also fit in the same way as the logistic regression (i.e., 3 similar models). The lasso-selected predictors resulted in slightly better accuracy than the boruta-selected predictors (A = .200 vs. .207). However, the logistic model with lasso-selected predictors resulted in a better accuracy (A = .179 vs. .200). As such, the logistic model with lasso-selected predictors outperformed Naive Bayes in Two-Year Recidivism.
+
+**Was the Model Biased?**
+
+Unfortunately, this model was biased. African-Americans were predicted to recidivate more often (M = .31) than other races, and this is significant at the .05 level. When African-Americans were removed from the data set, this difference is no longer significant. Men were also predicted to recidivate more often (M = .261) than women (M = .147), and this is significant at the .05 level. Younger people also were more likely to recidivate than older people. This model definitely did capture the trends we found in the exploratory analysis, but can be considered biased as a result.
+
+### Violent Recidivism
+
+```{r}
+rm(list=setdiff(ls(), "data"))
+```
+
+#### Preparing Lasso Feature Selection
+```{r}
+# Define x matrix and y vector for use with glmnet
+x <- model.matrix(is_violent_recid~., data)[,-1]
+y <- data$is_violent_recid
+grid=10^seq(10,-2, length =100)
+```
+
+#### Feature Selection for Violent Recidivism
+```{r, cache = TRUE}
+# Split data into test and train
+train <- sample(1:nrow(x), nrow(x)/2)
+test <- (-train)
+y.test <- y[test]
+
+cv.logit <- cv.glmnet(x[train,], y[train], alpha = 1, family = "binomial")
+
+plot(cv.logit)
+
+#Lasso Model
+lasso.model <- glmnet(x[train, ], y[train], alpha = 1, family = "binomial", lambda = grid)
+
+lasso.coef <- predict(lasso.model, type = 'coefficients', s = cv.logit$lambda.min)
+
+lasso.coef[lasso.coef != 0] #timeinprison, count.prior.jail, is_recid, c_charge_degree, & juv_misd_count features
+
+lasso.preds <- predict(lasso.model, s = cv.logit$lambda.min, newx = x[test, ], type = "response")
+
+#Boruta Feature Selection
+y <- data$is_violent_recid
+x <- subset(data, select = -c(is_violent_recid))
+boruta_output <- Boruta(x, y)
+
+boruta_output$finalDecision #All Variables, except sex, juv_fel_count, juv_misd_count, juv_other_count, count.prior.jail
+```
+
+> Lasso selected timeinprison, count.prior.jail, is_recid, c_charge_degree, & juv_misd_count as features. Boruta selected all variables except sex, juv_fel_count, juv_misd_count, juv_other_count, and count.prior.jail. I included full models for both Logistic and Naive Bayes because both of these feature selection models removed a large number of potential variables. 
+
+#### Predicting Violent Recidivism -- Logistic Regression
+```{r}
+#Violent Recidivism -- Logistic and Naive Bayes
+
+# Define x matrix and y vector for use with glmnet
+x <- model.matrix(is_recid~., data)[,-1]
+y <- data$is_recid
+grid=10^seq(10,-2, length =100)
+
+##Create the samples
+
+train <- sample(1:nrow(data), nrow(data)/2)
+
+data.train <- data[train, ]
+data.test <- data[-train, ]
+
+#Logistic with Lasso Regression
+logit.lasso <- glm(is_violent_recid~timeinprison + count.prior.jail + is_recid + c_charge_degree +
+                     juv_misd_count, data = data.train, family = "binomial")
+logit.probs.lasso <- logit.lasso %>% predict(data.test, type = "response")
+
+#Logistic with Boruta
+logit.boruta <- glm(is_violent_recid~. -sex -juv_fel_count -juv_misd_count -juv_other_count
+                    -count.prior.jail, data = data.train, family = "binomial")
+logit.probs.boruta <- logit.boruta %>% predict(data.test, type = "response")
+
+#Full Logistic Model
+logit.full <- glm(is_violent_recid~., data = data.train, family = "binomial")
+logit.probs.full <- logit.full %>% predict(data.test, type = "response")
+
+#Create Tables for Logistic and Lasso-Logistic Models
+log.lasso.pred <- rep("No Recid", nrow(data.test))
+log.boruta.pred <- rep("No Recid", nrow(data.test))
+log.full.pred <- rep("No Recid", nrow(data.test))
+lass.pred <- rep("No Recid", nrow(data.test))
+
+log.lasso.pred[logit.probs.lasso > .5] <- "Yes Recid"
+log.boruta.pred[logit.probs.boruta > .5] <- "Yes Recid"
+log.full.pred[logit.probs.full > .5] <- "Yes Recid"
+lass.pred[lasso.preds > .5] <- "Yes Recid"
+
+#Find Error Rates
+log.lasso.table <- table(log.lasso.pred, data.test$is_violent_recid)
+log.lasso.error <- (log.lasso.table[1, 2] + log.lasso.table[2, 1])/nrow(data.test)
+
+log.boruta.table <- table(log.boruta.pred, data.test$is_violent_recid)
+log.boruta.error <- (log.boruta.table[1, 2] + log.boruta.table[2, 1])/nrow(data.test)
+
+log.full.table <- table(log.full.pred, data.test$is_violent_recid)
+log.full.error <- (log.full.table[1, 2] + log.full.table[2, 1])/nrow(data.test)
+
+lass.table <- table(lass.pred, data.test$is_violent_recid)
+if(length(levels(as.factor(lass.pred))) == 1){
+  lass.error <- lass.table[1, 2] /nrow(data.test)
+}else{
+  lass.error <- (lass.table[1, 2] + lass.table[2, 1])/nrow(data.test)
+}
+
+#Compare Logistics & Lasso
+log.lasso.error #Choose the logistic lasso-selected model -- it's the least complicated
+log.boruta.error
+log.full.error
+lass.error
+```
+
+> We have four models, and, depending on the random subset via Validation and Test set approach, either the Logistic Lasso or the Logistic Regression with Lasso-Selected coefficients has the lowest misclassification rate. I choose to keep the Logistic Regression with Lasso-Selected coefficients because it is easier to interpret.
+
+#### Predicting Violent Recidivism -- Naive Bayes Classifier
+```{r, warning=FALSE}
+#Naive Bayes Lasso
+nb.model.lasso <- NaiveBayes(data = data.train, is_violent_recid~timeinprison + count.prior.jail + is_recid + 
+                               c_charge_degree + juv_misd_count, usekernel = TRUE)
+nb.pred.lasso <- nb.model.lasso %>% predict(data.test)
+
+#Naive Bayes Boruta
+nb.model.boruta <- NaiveBayes(data = data.train, is_violent_recid~. -sex -juv_fel_count -juv_misd_count -juv_other_count
+                    -count.prior.jail, usekernel = TRUE)
+nb.pred.boruta <- nb.model.boruta %>% predict(data.test)
+
+#Naive Bayes Full
+nb.model.full <- NaiveBayes(data = data.train, is_violent_recid ~., usekernel = TRUE)
+nb.pred.full <- nb.model.full %>% predict(data.test)
+
+#Calculate Naive Bayes Error
+nb.table.full <- table(nb.pred.full$class, data.test$is_violent_recid)
+nb.error.full <- (nb.table.full[1, 2] + nb.table.full[2, 1])/nrow(data.test)
+
+nb.table.lasso <- table(nb.pred.lasso$class, data.test$is_violent_recid)
+nb.error.lasso <- (nb.table.lasso[1, 2] + nb.table.lasso[2, 1])/nrow(data.test)
+
+nb.table.boruta <- table(nb.pred.boruta$class, data.test$is_violent_recid)
+nb.error.boruta <- (nb.table.boruta[1, 2] + nb.table.boruta[2, 1])/nrow(data.test)
+
+#Compare NB Rates
+nb.error.full
+nb.error.lasso #We will keep the nb.lasso because it has the lowest error!
+nb.error.boruta
+
+#We will keep Logistic Model
+log.lasso.error < nb.error.lasso
+```
+
+> Out of the Naive Bayes models, I choose to keep the Naive Bayes with Lasso-Selected coefficients because it has the lowest misclassification rate. However, the Logistic Regression Model with Lasso-Selected coefficients results in a smaller misclassification error than the Naive Bayes Model with Lasso-Selected coefficients. Sometimes the Naive Bayes Lasso is marked better as the Logistic Model Lasso, but this is because the misclassification rates are so similar, and normally depends on the way the dataset is randomly split. Most of the time, Logistic Model with Lasso-Coefficients comes out on top. 
+
+#### 10-Fold CV Error for Violent Recidivism
+```{r, warning=FALSE}
+control <- trainControl(method = "cv")
+
+nb.lasso.cv <- 1 - train(is_violent_recid~timeinprison + count.prior.jail + is_recid + 
+                               c_charge_degree + juv_misd_count, data = data, trControl = control, method =
+                   'naive_bayes')$results[2, "Accuracy"]
+
+nb.boruta.cv <- 1 - train(is_violent_recid~. -sex -juv_fel_count -juv_misd_count -juv_other_count
+                    -count.prior.jail, data = data, trControl = control, 
+                           method = 'naive_bayes')$results[2, "Accuracy"]
+
+nb.full.cv <- 1 - train(is_violent_recid~., data = data, trControl = control, 
+                           method = 'naive_bayes')$results[2, "Accuracy"]
+
+logit.boruta.cv <- 1 - train(is_violent_recid~. -sex -juv_fel_count -juv_misd_count -juv_other_count
+                    -count.prior.jail, data = data, trControl = control,
+                         method = 'glm', family = 'binomial')$results[1, "Accuracy"]
+
+logit.lasso.cv <- 1 - train(is_violent_recid~timeinprison + count.prior.jail + is_recid + c_charge_degree +
+                     juv_misd_count, data = data, trControl = control, method = 'glm',
+               family = 'binomial')$results[1, "Accuracy"]
+
+logit.full.cv <- 1 - train(is_violent_recid~., data = data, trControl = control, method = 'glm',
+               family = 'binomial')$results[1, "Accuracy"]
+
+lasso.cv <- cv.glmnet(x, y, alpha = 1, lambda = grid, family = "binomial", type.measure = "class")$cvm[100]
+
+which.min(c(nb.lasso.cv, nb.boruta.cv, nb.full.cv, logit.boruta.cv, logit.lasso.cv, logit.full.cv, lasso.cv))
+#CV confirms Logistic Regression with Lasso-Selected Coefficients/ Full Logisitic / Logistic Lasso depending on sample. Keep logistic with lasso-selected coefficients for ease of interpretation
+```
+
+> Cross Validation confirms either Logistic Regression with Lasso-Selected coefficients, full Logistic Model, or Logistic Lasso depending on the random testing sample. At the end of the day, all of these models had very, *very* similar misclassification rates, so I decided to keep the Logistic Regression with Lasso-Selected coefficients for ease of interpretation.
+
+#### ROC Curve with Selected Model - Violent Recidivism
+```{r}
+log.preds <- logit.lasso %>% predict(data.test, type = "response")
+log.perf <- prediction(log.preds, data.test$is_violent_recid)
+roc.perf <- performance(log.perf, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(log.perf, measure = "auc")
+auc.train <- auc.train@y.values
+
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .25, y = .65 ,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+```
+
+> The ROC curve also shows that this is a well performing model for predicting is_violent_recid.
+
+#### Findings & Bias Analysis
+```{r}
+#Violent Recid
+
+data.test$predictions <- log.lasso.pred
+data.test$predictions[data.test$predictions == "No Recid"] <- 0
+data.test$predictions[data.test$predictions == "Yes Recid"] <- 1
+data.test$predictions <- as.numeric(data.test$predictions)
+
+#Race
+race.r <- ggplot(data.test, aes(x = race, fill = as.factor(predictions))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Race') +
+  ylab('Number of People in Bin')
+
+summary(aov(predictions ~ race, data.test))
+
+kable(data.test %>%
+  group_by(race) %>%
+  summarize_at(c("predictions"), mean), digits = 2)
+
+#Age
+age.r <- ggplot(data.test, aes(x = age, fill = as.factor(predictions))) + geom_histogram(position = "fill") +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Age') +
+  ylab('Number of People in Bin')
+
+#Sex
+sex.r <- ggplot(data.test, aes(x = sex, fill = as.factor(predictions))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Sex') +
+  ylab('Number of People in Bin')
+
+t.test(predictions ~ sex, data.test)
+
+kable(data.test %>%
+  group_by(sex) %>%
+  summarize_at(c("predictions"), mean), digits = 2)
+
+grid.arrange(race.r, age.r, sex.r, ncol = 2)
+```
+
+For this variable, I fit 4 models -- Logistic Lasso, regular logistic with lasso-selected predictors, regular logistic with boruta-selected predictors, and a full model. A full model was included because both lasso and boruta feature selections resulted in a fair number of predictors being removed, so a full model is included for completeness.
+
+I found that the logistic model with lasso-selected predictors resulted in the best accuracy (A = .075). This was also marginally better than the logistic lasso (A = .075 vs. .076). 
+
+A Naive Bayes model was also fit in the same way as the logistic regression (i.e., 4 similar models). The lasso-selected predictors resulted in slightly better accuracy than the boruta-selected predictors (A = .077). However, the logistic model with lasso-selected predictors resulted in a better accuracy (A = .075 vs. .077). As such, the logistic model with lasso-selected predictors outperformed Naive Bayes in Violent Recidivism.
+
+**Was the Model Biased?**
+
+The model appears to be not as biased as the two year recidivism. However, it predicted Native Americans as being more likely to violently recidivate (M = .06) compared to other races. However, if we removed Native and African Americans from the data set, the differences are no longer statistically significant. It was not biased between men (M = .008) and women (M = .003). The difference was not statistically significant. And finally, it appeared that across age, younger individuals were more likely to violently recidivate than older, although this is hard to tell. 
+This model was unable to capture the exact trends we saw in the violent exploratory analysis, but it does not appear completely biased across groups, but it remains biased for Race.
+
+### Model Summary
+![](C:/Users/germa/OneDrive/GraduateSchool/Classes_Spring/Mini 4/Data Mining/Group Project/Final/john table.png)
+
+> I find that Logistic Regression produced the best misclassification rates compared to Naive Bayes in both Two Year and Violent recidivism. They both had very similar AUC values, so I picked the model with the lowest misclassification rates. Logistic Regression with Lasso-Selected Coefficients classified recidivism rates really well.
+
+<a href="#top">Back to top</a>
+
+## KAY -- Linear and Quadratic Discriminant Analysis
+
+To be coherent with the team, I used the dataset that only keeps the necessary variables. I adjusted my data frame by changing the "race" variable to a vector and then re-ordering it by having "Caucasian" listed as the first one, so it could be seen as a baseline. The reason for it is that after I first ran the LDA and QDA model, "African American" was used as the baseline. It was not ideal for the interpretation, especially when one of our goals is to examine whether the system is racist. I also removed the "c_charge_degree" because it gave an error of having constant values when running the LDA model. Two data frames were created for is_recid and is_violent_recid respectively. For is_recid, the variable "is_violent_recid" is omitted because including it as an indicator variable may create bias, considering it could be highly correlated with the outcome variable. The reason is the same for is_violent_recid. There are 12 variables each in the data frames of “is_recid” and “is_violent_recid” for LDA and QDA models.
+
+These 14 variables are selected based on their relevance to recidivism. I did some research on the model selection for discriminant analysis. Generally, they are challenged when
+1. there are a large number of predictors;
+2. there are more predictors than samples;
+3. the dataset has a complicated structure with too many variables present;
+4. there are multiple data sources (Zhang, Mai, and Pan 2019). 
+
+I also tried a method suggested by Mueller (2019), which was to perform a rank for variables in terms of importance from a glm and then fit these variables to an LDA to see if the accuracy rate improves. My pre-analysis shows that there was barely any change (a 0.001 increase). Considering my findings, I fit a full model to the discriminant analyses. 
+
+To evaluate the models, I split the data into a training set and validation set. Instead of using the 50/50 rule as the in-class lab did, I applied one of the common ratios as: 80% training and 20% validation (Darelos 2009). Model evaluations are based on the misclassification rate and the ROC curve, more specifically, the AUC. 
+
+### Part One: Data exploratory
+
+#### Read data (csv file), data processing, and important variables exploratory 
+
+```{r}
+rm(list=ls())
+
+# read csv file to load the data 
+recid <- read.csv("recid_data.csv", header = TRUE)
+
+# Delete Irrelevant Columns
+# We don't need peoples' name do predict if that person will recid
+recid$name=NULL
+recid$first=NULL
+recid$last=NULL
+
+# We don't need age because we have age catagory
+recid$age_cat=NULL
+
+# Remove anything related to COMPAS
+recid$compas_screening_date=NULL
+recid$decile_score=NULL
+recid$c_days_from_compas=NULL
+
+# Case number/Identification number is an identification of the case, so won't be needed
+recid$r_case_number=NULL
+recid$vr_case_number=NULL
+recid$X=NULL
+recid$person_id=NULL
+
+# Date of birth not needed becasue we have age category
+recid$dob=NULL
+
+# We don't need the what date the person was arrested because getting arrested in specific date has nothing to do with if the person will be recid or not. Also, we have to count of how many times the person was arrested.
+recid$c_arrest_date=NULL
+recid$c_offense_date=NULL
+recid$r_offense_date=NULL
+recid$r_jail_in=NULL
+recid$r_jail_out=NULL
+recid$vr_offense_date=NULL
+
+# vr_charge or r_charge degree is not needed becasue this is a description of violent recidivism
+recid$vr_charge_degree=NULL
+recid$r_charge_degree=NULL
+
+recid$r_days_from_arrest=NULL
+
+recid$num_r_cases=NULL
+
+# Delete Irrelevant Rows
+table(recid$c_charge_degree)
+x1 = which(recid$c_charge_degree=="(CO3)")
+recid = recid[-x1,]
+x2 = which(recid$c_charge_degree=="(CT)")
+recid = recid[-x2,]
+x3 = which(recid$c_charge_degree=="(TCX)")
+recid = recid[-x3,]
+x4 = which(recid$c_charge_degree=="(X)")
+recid = recid[-x4,]
+x5 = which(recid$c_charge_degree=="(F5)")
+recid = recid[-x5,]
+x6 = which(recid$c_charge_degree=="(F6)")
+recid = recid[-x6,]
+x7 = which(recid$c_charge_degree=="(NI0)")
+recid = recid[-x7,]
+table(recid$c_charge_degree)
+
+# reorder the race variables and make Caucasian the baseline 
+recid$race = factor(recid$race, levels = c("Caucasian","African-American","Asian","Hispanic","Native American","Other"))
+
+rm(list=setdiff(ls(), "recid"))
+```
+
+### Part Two: Model training and validation
+
+#### LDA model 1: "is_recid" 
+```{r}
+# create a dataframe with variables except "is_violent_recid"
+df1 <- subset(recid, select = c(sex, race, age, juv_fel_count, juv_misd_count, juv_other_count, priors_count, is_recid, count.prior.jail, count.prior.prison, timeinjail, timeinprison))
+
+# split into training and validation sets
+set.seed(2)
+train.is_recid <- sample(1:nrow(df1), 0.8*nrow(df1))
+test.is_recid <- setdiff(1:nrow(df1),train.is_recid)
+
+#create a dataframe of test set
+df.test <- df1 %>% filter(row_number() %in% test.is_recid)
+
+# fit the lda model to the training data set
+lda.fit.is_recid <- lda(is_recid~., data=df1, subset=train.is_recid) 
+lda.fit.is_recid
+```
+
+- Prior Probabilities of groups show that 66.81529% of the training data didn't recidivate and 33.18471% recidivated.
+
+- Group means for sexMale indicates the variable Male has a slightly greater influence on recividism (0.8502879) than on non-recividism (0.7717827). 
+
+- Group means show that Asian, Hispanic, Native American, and Other are less likely to recividate.
+
+- However, group mean also shows African Americans are more likely to recividate (0.6023033) than non-recividism (0.4551001)
+
+- All variables about criminial history (juv_fel_count, priors_count, count.prior.jail, etc.) indicate that defenders with criminal history are more likely to recividate. 
+
+- The coefficient of linear discriminants for African American is positive while other races are not, indicating that compared to Caucasian (baseline), being an African American are more likely to be classified as recividism.
+
+- We may say that the system is racist against African Americans in terms of recividsm compared to other races. 
+
+
+#### LDA model 1 evaluation: misclassification rate and ROC curve
+```{r}
+# fit the lda model to the test dataframe
+lda.pred <- predict(lda.fit.is_recid, newdata = df.test)
+names(lda.pred)
+lda.class <- lda.pred$class
+
+# compare the prediction to the test set using a confusion matrix
+test.true <- df1$is_recid[test.is_recid]
+confusion_matrix.lda <- table(lda.class, test.true)
+confusion_matrix.lda
+
+# calcualte the misclassification rate
+misclass.rate.lda <- (confusion_matrix.lda[1,2]+confusion_matrix.lda[2,1])/nrow(df.test)
+misclass.rate.lda
+```
+
+> The model is fitted to the test data set. Model evaluations are based on the misclassification rate and the ROC curve, more specifically, the AUC. A statistical difference test is conducted to see if the model is biased. 
+
+```{r}
+# Construct a ROC curve:
+# Get the posteriors as a dataframe
+
+lda.pred.posteriors <- as.data.frame(lda.pred$posterior)
+
+# Evaluate the model
+
+pred <- prediction(lda.pred.posteriors[,2], df.test$is_recid)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+# Plot
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .25, y = .65 ,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+#Is the model biased in terms of race?
+df.test$predictions <- lda.class
+df.test$predictions[df.test$predictions == "No Recid"] <- 0
+df.test$predictions[df.test$predictions == "Yes Recid"] <- 1
+df.test$predictions <- as.numeric(df.test$predictions)
+
+#Race
+race.r <- ggplot(df.test, aes(x = race, fill = as.factor(predictions))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Race') +
+  ylab('Number of People in Bin')
+
+race.r
+
+summary(aov(predictions ~ race, df.test))
+
+
+kable(df.test %>%
+  group_by(race) %>%
+  summarize_at(c("predictions"), mean), digits = 2)
+
+summary(aov(predictions ~ race, df.test[df.test$race != "African-American",]))
+```
+
+- The misclassification rate is 21.50%.
+
+- The ROC curve has an AUC of 0.833.
+
+- The model is biased. African Americans were predicted to recidivate more often than other races (=1.30) and it is significant at the 0.05 level with p-value < 2e-16.
+
+- When African Americans are removed from the data set, the difference is not significant anymore with p-value = 0.111
+
+- Conclusion 1: LDA model for is_recid gives a misclassfication rate = 21.50%.
+
+- LDA model for is_recid gives a ROC curve with AUC = 0.833.
+
+
+#### LDA model 2: "is_violent_recid" 
+```{r}
+# create a dataframe with variables except "is_recid"
+df1.violent <- subset(recid, select = c(sex, race, age, juv_fel_count, juv_misd_count, juv_other_count, priors_count, is_violent_recid, count.prior.jail, count.prior.prison, timeinjail,timeinprison))
+
+# split into training and validation sets
+set.seed(2)
+train.is_violent_recid <- sample(1:nrow(df1.violent), 0.8 * nrow(df1.violent))
+test.is_violent_recid <- setdiff(1:nrow(df1.violent),train.is_violent_recid)
+
+#create a dataframe of test set
+df.test2 <- df1.violent %>% filter(row_number() %in% test.is_violent_recid)
+
+# fit the lda model to the training data set
+lda.fit.is_violent_recid <- lda(is_violent_recid~., data=df1.violent, subset=train.is_violent_recid) 
+lda.fit.is_violent_recid
+```
+
+- Prior Probabilities of groups show that 92.34% of the observarions in training dataset didn't have a violent recidivism, and 7.656% had violent recidivism.
+
+- Group mean for sexMale indicates that the variable Male has a slightly greater influence on violent recividism (0.8785358) than without violent recividism (0.7911436). 
+
+- Group mean for whether Asians had violent recividism are almost equal, and the overall percentages are very small (about 0.4%). 
+
+- Group means for Caucasian, Hispanic, and Other show that these races are less likely to have violent recividism.
+
+- Group mean for African Americans show that there are more violent recividism (0.6189684); the results are similar to is_recid. 
+
+- All variables about criminial history (juv_fel_count, priors_count, count.prior.jail, etc.) indicate that defenders with criminal history are more likely to recividate. 
+
+- The coefficients of linear discriminants for African American, Native American, other are positive, indicating that compared to Caucasian (baseline), the system is more likely to classifed these races to violent recividism. It is not necesarily racist against African Americans in terms of violent recividsm.
+
+#### LDA model 2 evaluation: misclassification rate and ROC curve
+```{r}
+# fit the lda model to the test dataframe
+lda.pred2 <- predict(lda.fit.is_violent_recid, newdata = df.test2)
+names(lda.pred2)
+lda.class2 <- lda.pred2$class
+
+# compare the prediction to test set using confusion matrix
+test.true2 <- df1.violent$is_violent_recid[test.is_violent_recid]
+confusion_matrix.lda2 <- table(lda.class2, test.true2)
+confusion_matrix.lda2
+
+# calcualte the misclassification rate
+misclass.rate.lda2 <- (confusion_matrix.lda2[1,2]+confusion_matrix.lda2[2,1])/nrow(df.test2)
+misclass.rate.lda2
+```
+
+> The LDA model is fitted to the test data set. Model evaluations are based on the misclassification rate and the ROC curve, more specifically, the AUC. A statistical difference test is conducted to see if the model is biased.
+
+```{r}
+# Construct a ROC curve:
+# Get the posteriors as a dataframe
+lda.pred.posteriors2 <- as.data.frame(lda.pred2$posterior)
+
+# Evaluate the model
+pred2 <- prediction(lda.pred.posteriors2[,2], df.test2$is_violent_recid)
+roc.perf2 = performance(pred2, measure = "tpr", x.measure = "fpr")
+auc.train2 <- performance(pred2, measure = "auc")
+auc.train2 <- auc.train2@y.values
+# Plot
+plot(roc.perf2)
+abline(a=0, b= 1)
+text(x = .25, y = .65 ,paste("AUC = ", round(auc.train2[[1]],3), sep = ""))
+
+#Is the model biased in terms of race?
+df.test2$predictions <- lda.class2
+df.test2$predictions[df.test2$predictions == "No Recid"] <- 0
+df.test2$predictions[df.test2$predictions == "Yes Recid"] <- 1
+df.test2$predictions <- as.numeric(df.test2$predictions)
+
+#Race
+race.r <- ggplot(df.test2, aes(x = race, fill = as.factor(predictions))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Race') +
+  ylab('Number of People in Bin')
+
+race.r
+
+summary(aov(predictions ~ race, df.test2))
+
+
+kable(df.test2 %>%
+  group_by(race) %>%
+  summarize_at(c("predictions"), mean), digits = 2)
+
+summary(aov(predictions ~ race, df.test2[df.test2$race != "African-American",]))
+```
+- Conclusion 2: LDA model for is_violent_recid gives a misclassfication rate = 9.322%.
+
+- LDA model for is_violent_recid gives a ROC curve with AUC = 0.786.
+
+- The misclassification rate is 9.322%.
+
+- The ROC curve has an AUC of 0.786.
+
+- The coefficients of linear discriminants for African American, Native American, and Other are positive, indicating that compared to Caucasian (baseline), the system is more likely to classify these races to violent recidivism. It is not necessarily biased against African Americans in terms of violent recidivism.
+
+- A significance analysis also shows that the model is not biased. Although African Americans are predicted to have recidivism slightly higher than other races, the difference is not significant at a 0.05 level. After removing African Americans, we no longer have statistical significance. 
+
+#### QDA model 1: "is_recid"
+<a id="qdamodels"></a>
+```{r}
+# create a dataframe without is_violent_recid to avoid colinearity
+df2 <- recid[,c("is_recid", "sex", "race", "age", "juv_fel_count", "juv_misd_count", "juv_other_count", "priors_count", "count.prior.jail", "count.prior.prison", "timeinjail","timeinprison")]
+
+set.seed(2)
+ind = sample(2,nrow(df2),replace=TRUE,prob=c(0.7,0.3))
+train.is_recid.qda = df2[ind==1,]
+test.is_recid.qda = df2[ind==2,]
+
+# fit the lda model to the training data set
+qda.fit.is_recid <- qda(is_recid~., data=train.is_recid.qda) 
+qda.fit.is_recid
+```
+
+- QDA model contains group means but not coefficients of the estimates because the QDA classifier involves a quadratic, rather than a linear, function of the predictors. 
+
+- From the group means, we can see that male still have more two-year-recidivism than non-two-year-recidivism.
+
+- We also observe that African Americans are more likely to have recidivism than non-recidivism. The ratio is very close to the LDA model (non-two-year-recidivism = 0.4500657; two-year-recidivism = 0.5933628). 
+
+- Native Americans are equally likely to either recividate or not. Asian, Hispanic, and Other are less likely to recidivate. 
+
+- All variables about criminal history (juv_fel_count, priors_count, count.prior.jail, etc.) indicate that defenders with a criminal history are more likely to have violent recidivism.
+
+#### QDA model 1 evaluation: misclassification rate and ROC curve
+```{r}
+# fit the lda model to the test dataframe
+qda.pred1 <- predict(qda.fit.is_recid, test.is_recid.qda)
+names(qda.pred1)
+qda.class1 <- qda.pred1$class
+confusion_matrix.qda1 <- table(qda.class1,test.is_recid.qda$is_recid)
+confusion_matrix.qda1
+
+misclassification.rate.qda1 <- (confusion_matrix.qda1[1,2]+confusion_matrix.qda1[2,1])/nrow(df2)
+misclassification.rate.qda1
+```
+
+> The QDA model is fitted to the test data set. Model evaluations are based on the misclassification rate and the ROC curve, more specifically, the AUC. A statistical difference test is conducted to see if the model is biased. 
+
+<a id="qda1bias"></a>
+```{r}
+# Construct a ROC curve:
+# Get the posteriors as a dataframe
+qda.pred.posteriors1 <- as.data.frame(qda.pred1$posterior)
+
+# Evaluate the model
+pred3 <- prediction(qda.pred.posteriors1[,2], test.is_recid.qda$is_recid)
+roc.perf3 = performance(pred3, measure = "tpr", x.measure = "fpr")
+auc.train3 <- performance(pred3, measure = "auc")
+auc.train3 <- auc.train3@y.values
+# Plot
+plot(roc.perf3)
+abline(a=0, b= 1)
+text(x = .25, y = .65 ,paste("AUC = ", round(auc.train3[[1]],3), sep = ""))
+
+#Is the model biased in terms of race?
+test.is_recid.qda$predictions <- qda.class1
+test.is_recid.qda$predictions[test.is_recid.qda$predictions == "No Recid"] <- 0
+test.is_recid.qda$predictions[test.is_recid.qda$predictions == "Yes Recid"] <- 1
+test.is_recid.qda$predictions <- as.numeric(test.is_recid.qda$predictions)
+
+#Race
+race.r <- ggplot(test.is_recid.qda, aes(x = race, fill = as.factor(predictions))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Race') +
+  ylab('Number of People in Bin')
+
+race.r
+
+summary(aov(predictions ~ race, test.is_recid.qda))
+
+
+kable(test.is_recid.qda %>%
+  group_by(race) %>%
+  summarize_at(c("predictions"), mean), digits = 2)
+
+summary(aov(predictions ~ race, test.is_recid.qda[test.is_recid.qda$race != "African-American",]))
+```
+
+```{r}
+#Age
+ggplot(test.is_recid.qda, aes(x = age, fill = as.factor(predictions))) + 
+  geom_histogram(position = 'fill') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Age') +
+  ylab('Number of People in Bin')
+```
+
+```{r}
+#Sex
+ggplot(test.is_recid.qda, aes(x = sex, fill = as.factor(predictions))) + 
+  geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Sex') +
+  ylab('Number of People in Bin')
+
+t.test(predictions ~ sex, data = test.is_recid.qda)
+```
+
+- The misclassification rate is 7.969%
+
+- The ROC curve has an AUC of 0.763.
+
+- A significance analysis doesn't necessarily show that the model is racist. African Americans are predicted to have recidivism higher than other races and the difference is statistically significant at a 0.05 level. BUt after removing African Americans, the difference is still statistically significant. 
+
+- Younger people are predicted to have a higher probability of recidivating compared to older people.
+
+- Males are also predicted to have a significantly higher chance of recidivating than females. 
+
+- QDA accurately captures the trends we see in the EDA.
+
+- Conclusion 3: QDA model for is_recid gives a misclassfication rate = 7.969%. 
+
+- QDA model for is_recid gives a ROC curve with AUC = 0.763.
+
+#### QDA model 2: "is_violent_recid" 
+```{r}
+# create a dataframe without is_recid to avoid colinearity
+df3 <- recid[,c("is_violent_recid", "sex", "race", "age", "juv_fel_count", "juv_misd_count", "juv_other_count", "priors_count", "count.prior.jail", "count.prior.prison", "timeinjail","timeinprison")]
+
+set.seed(2)
+ind = sample(2,nrow(df3),replace=TRUE,prob=c(0.7,0.3))
+train.is_violent_recid.qda = df3[ind==1,]
+test.is_violent_recid.qda = df3[ind==2,]
+
+# fit the lda model to the training data set
+qda.fit.is_violent_recid <- qda(is_violent_recid~., data=train.is_violent_recid.qda)
+qda.fit.is_violent_recid
+```
+
+- From the group means, we can see that Male still has a greater influence on two-year-recidivism (0.8843931) than on non-two-year-recidivism (0.7864278). African Americans are also more likely to have violent recidivism (0.6319846) than without violent-recidivism (0.4864436). The difference is slightly larger than the two-year-recidivism. Native Americans are more likely to have violent recidivism. Asian, Hispanic, and Other are less likely to have violent recidivism. 
+
+- All variables about criminal history (juv_fel_count, priors_count, count.prior.jail, etc.) indicate that defenders with a criminal history are more likely to have violent recidivism.
+
+- LDA and QDA have essentially the same finding for African American. The reason could be that African Americans are arrested more, and therefore, there are more African Americans in the system than other races.
+
+- QDA model contains group means but not coefficients of the estimates because the QDA classifier involves a quadratic, rather than a linear, function of the predictors. 
+
+#### QDA model 2: validation and misclassification rate 
+```{r}
+# fit the lda model to the test dataframe
+qda.pred2 <- predict(qda.fit.is_violent_recid, test.is_violent_recid.qda)
+names(qda.pred2)
+qda.class2 <- qda.pred2$class
+confusion_matrix.qda2 <- table(qda.class2,test.is_violent_recid.qda$is_violent_recid)
+confusion_matrix.qda2
+
+misclassification.rate.qda2 <- (confusion_matrix.qda2[1,2]+confusion_matrix.qda2[2,1])/nrow(df3)
+misclassification.rate.qda2
+```
+
+> The QDA model is fitted to the test data set. Model evaluations are based on the misclassification rate and the ROC curve, more specifically, the AUC. A statistical difference test is conducted to see if the model is biased. 
+
+<a id="qda2bias"></a>
+```{r}
+# Construct a ROC curve:
+# Get the posteriors as a dataframe
+qda.pred.posteriors2 <- as.data.frame(qda.pred2$posterior)
+
+# Evaluate the model
+pred4 <- prediction(qda.pred.posteriors2[,2], test.is_violent_recid.qda$is_violent_recid)
+roc.perf4 = performance(pred4, measure = "tpr", x.measure = "fpr")
+auc.train4 <- performance(pred4, measure = "auc")
+auc.train4 <- auc.train4@y.values
+# Plot
+plot(roc.perf4)
+abline(a=0, b= 1)
+text(x = .25, y = .65 ,paste("AUC = ", round(auc.train4[[1]],3), sep = ""))
+
+qda.pred.is_recid <- qda.class1
+qda.pred.vis_recid <- qda.class2
+qda.test.data.r <- test.is_recid.qda$is_recid
+qda.test.data.v <- test.is_violent_recid.qda$is_violent_recid
+
+#Is the model biased in terms of race?
+test.is_violent_recid.qda$predictions <- qda.class2
+test.is_violent_recid.qda$predictions[test.is_violent_recid.qda$predictions == "No Recid"] <- 0
+test.is_violent_recid.qda$predictions[test.is_violent_recid.qda$predictions == "Yes Recid"] <- 1
+test.is_violent_recid.qda$predictions <- as.numeric(test.is_violent_recid.qda$predictions)
+
+#Race
+race.r <- ggplot(test.is_violent_recid.qda, aes(x = race, fill = as.factor(predictions))) + geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Race') +
+  ylab('Number of People in Bin')
+
+race.r
+
+summary(aov(predictions ~ race, test.is_violent_recid.qda))
+
+
+kable(test.is_violent_recid.qda %>%
+  group_by(race) %>%
+  summarize_at(c("predictions"), mean), digits = 2)
+
+summary(aov(predictions ~ race, test.is_violent_recid.qda[test.is_violent_recid.qda$race != "African-American",]))
+```
+
+```{r}
+#Age
+ggplot(test.is_violent_recid.qda, aes(x = age, fill = as.factor(predictions))) + 
+  geom_histogram(position = 'fill') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Age') +
+  ylab('Number of People in Bin')
+```
+
+```{r}
+#Sex
+ggplot(test.is_violent_recid.qda, aes(x = sex, fill = as.factor(predictions))) + 
+  geom_bar(position = 'dodge') +
+  scale_fill_discrete(name = "Recidivated", labels = c("No", "Yes")) +
+  xlab('Sex') +
+  ylab('Number of People in Bin')
+
+t.test(predictions ~ sex, data = test.is_violent_recid.qda)
+```
+
+- The misclassification rate is 3.9437%.
+
+- The ROC curve has an AUC of 0.696.
+
+- A significance analysis doesn't necessarily show that the model is racist. African Americans are predicted to have recidivism higher than other races and the difference is statistically significant at a 0.05 level. BUt after removing African Americans, the difference is still statistically significant. 
+
+- Younger people are predicted to violently recidivate more than older people.
+
+- Males are predicted to significantly violently recidivate more than females.
+
+- This QDA model accurately captures the trends we observed in the Violent Recidivism EDA.
+
+- Conclusion 4: QDA model for is_violent_recid gives a misclassfication rate = 3.9437%. 
+
+- QDA model for is_violent_recid gives a ROC curve with AUC = 0.696.
+
+#### LDA QDA Model Summary: 
+is_recid: QDA has a lower misclassification rate than LDA; LDA has a larger AUC than QDA
+is_violent_recid: QDA has a lower misclassfication rate than LDA; LDA has a larger AUC than QDA
+We may only say that the LDA model for is_recid could be racist against African American. 
+
+#### Summary of Findings
+
+![](C:/Users/germa/OneDrive/GraduateSchool/Classes_Spring/Mini 4/Data Mining/Group Project/Final/LDASummary.png)
+
+<a href="#top">Back to top</a>
+
+## DANIEL -- Random Forest and Neural Networks
+
+Before I started, I removed all the columns that are information regarding that specific individual or the charge for both random forest model and neural network model. “C_charge_degree” variables with less than 10 in the data set were removed because we concluded that is not enough sample to train our model to be used for prediction. The outcome variables, “is_recid” and “is_violent_recid”, had to be converted to a factor for random forest model and to a boolean for neural network model. I separated the test dataset and training dataset by choosing the variables by random and 70% used for training and and 30% used for testing for both models. The Neural Network model needed extra cleaning because it only took quantitative inputs for every variable and they had to be scaled front [0,1]. All the factor variables were turned into dummy columns and all independent variables were normalized.
+
+$X Normalized = \frac{(X-Xmin)}{(Xmax-Xmin)}$  
+
+We also had to change the name of the columns that included the “-” symbol because the neuralnet() function could take that symbol. Neural network models were repeated 4 or 5 times to find the best model with the lowest error rate and while keeping the number of repetition low to avoid overfitting the model to training dataset. 
+
+We settled on the use of 14 variables in our data set. As John mentioned above, I didn’t use all 14 variables on the Random Forest model to avoid collinear and other issues. I chose to use the square root of 12. I chose this number because when I used the model to train and created a chart of importance of each variable
+
+
+### Import CSV files
+```{r}
+rm(list= ls()[!(ls() %in% c('qda.pred.is_recid', "qda.pred.vis_recid", 
+                            "qda.test.data.r", "qda.test.data.v"))])
+
+recid = read.csv("recid_data.csv", header = TRUE)
+```
+
+### Function to Analyze Confusion Matrix
+```{r}
+classMetrics <- function(score, y, 
+                         type = c("all", "accuracy", "sensitivity", 
+                                  "specificity", "ppv", "npv", "precision", 
+                                  "recall")) {
+  # This command throws an error if the user specifies a "type" that
+  # isn't supported by this function
+  type <- match.arg(type, several.ok = TRUE)
+  
+  
+  predicted = score
+  observed = y
+  #Confidence Matrix
+  conf.matrix = table(predicted,observed)
+  
+  #Types
+  A = conf.matrix[1,1]
+  B = conf.matrix[1,2]
+  C = conf.matrix[2,1]
+  D = conf.matrix[2,2]
+  
+  acc = (A+D)/(A+B+C+D)
+  spec = A/(A+C)
+  sens = D/(B+D)
+  ppv = D/(C+D)
+  npv = A/(A+B)
+  precision = ppv
+  recall = sens
+  m.error <- (B + C)/(A+B+C+D)
+  
+  nice = data.frame("accuracy"=acc, "sensitivity"=sens, "specificity"=spec, "ppv"=ppv, "npv"=npv, "precision"=precision,"recall"=recall,"misclassification rate"=m.error)
+  if(type != "all"){
+  nice = nice[type]
+  nice = t(nice)
+  colnames(nice) = c("value")
+  }else{
+  nice = t(nice)
+  colnames(nice) = c("value")
+  }
+  
+  list(conf.mat=conf.matrix,perf = nice)
+}
+```
+
+### Exploratory Phase
+
+#### Delete Irrelevant Columns
+```{r}
+# We don't need peoples' name do predict if that person will recid
+recid$name=NULL
+recid$first=NULL
+recid$last=NULL
+
+# We don't need age because we have age catagory
+####recid$age=NULL
+recid$age_cat=NULL
+
+# Remove anything related to COMPAS
+recid$compas_screening_date=NULL
+recid$decile_score=NULL
+recid$c_days_from_compas=NULL
+
+# Case number/Identification number is an identification of the case, so won't be needed
+recid$r_case_number=NULL
+recid$vr_case_number=NULL
+recid$X=NULL
+recid$person_id=NULL
+
+# Date of birth not needed becasue we have age category
+recid$dob=NULL
+
+# We don't need the what date the person was arrested because getting arrested in specific date has nothing to do with if the person will be recid or not. Also, we have to count of how many times the person was arrested.
+recid$c_arrest_date=NULL
+recid$c_offense_date=NULL
+recid$r_offense_date=NULL
+recid$r_jail_in=NULL
+recid$r_jail_out=NULL
+recid$vr_offense_date=NULL
+
+# vr_charge or r_charge degree is not needed becasue this is a description of violent recidivism
+recid$vr_charge_degree=NULL
+recid$r_charge_degree=NULL
+
+# Not Necessary
+recid$r_days_from_arrest=NULL
+recid$num_r_cases=NULL
+
+
+# reorder the race variables and make Caucasian the baseline 
+recid$race = factor(recid$race, levels = c("Caucasian","African-American","Asian","Hispanic","Native American","Other"))
+```
+
+> Remove columns that describe the individual or the charge status
+
+#### Delete Irrelevant Rows
+```{r}
+# Delete specific rows in c_charge_degree column
+table(recid$c_charge_degree)
+x1 = which(recid$c_charge_degree=="(CO3)")
+recid = recid[-x1,]
+x2 = which(recid$c_charge_degree=="(CT)")
+recid = recid[-x2,]
+x3 = which(recid$c_charge_degree=="(TCX)")
+recid = recid[-x3,]
+x4 = which(recid$c_charge_degree=="(X)")
+recid = recid[-x4,]
+x5 = which(recid$c_charge_degree=="(F5)")
+recid = recid[-x5,]
+x6 = which(recid$c_charge_degree=="(F6)")
+recid = recid[-x6,]
+x7 = which(recid$c_charge_degree=="(NI0)")
+recid = recid[-x7,]
+table(recid$c_charge_degree)
+```
+
+> The factors with quantities of single digit will not be effective when predicting if the specific factor makes a significant impact on `is_recid`
+
+### Random Forest
+
+```{r}
+# Change outcome variables to a factor
+recid$is_recid[recid$is_recid==1] = "yes"
+recid$is_recid[recid$is_recid==0] = "no"
+
+recid$is_violent_recid[recid$is_violent_recid==1] = "yes"
+recid$is_violent_recid[recid$is_violent_recid==0] = "no"
+```
+
+> Change the outcome variables to be a factor
+
+```{r}
+set.seed(222)
+ind = sample(2,nrow(recid),replace=TRUE,prob=c(0.7,0.3))
+recid.train = recid[ind==1,]
+recid.test = recid[ind==2,]
+```
+
+> Divide the `recid` dataset into two data sets, train and test. The training dataset is made up of 70% randomcly chosen from the `recid` dataset. The rest of the 30% will be assigned as a test dataset
+
+#### Use the `randomForest` command to fit a random forest to `recid.train` of `is_recid`
+```{r}
+recid.rf.1 = randomForest(as.factor(is_recid) ~.-is_violent_recid, data = recid.train,mytr=sqrt(12),importance=TRUE)
+recid.rf.1
+```
+
+> Perform `randomForest` on the `is_recid` and convert the outcome into a factor
+
+#### Use the `randomForest` command to fit a random forest to `recid.train` of `is_violent_recid`
+```{r}
+recid.rf.2 = randomForest(as.factor(is_violent_recid) ~.-is_recid, data = recid.train,mytr=sqrt(12),importance=TRUE)
+recid.rf.2
+```
+
+> Perform `randomForest` on the `is_violent_recid` and convert the outcome into a factor
+
+#### Finding Standard Classification Error of `Random Forest` model on the Training data of `is_recid`
+```{r}
+rf.misclass.1 = 1-(recid.rf.1$confusion[1,1]+recid.rf.1$confusion[2,2])/(recid.rf.1$confusion[1,1]+recid.rf.1$confusion[2,2]+recid.rf.1$confusion[1,2]+recid.rf.1$confusion[2,1])
+rf.misclass.1
+```
+
+> The misclassification rate of Random Forest model on `is_recid` is 20.4%
+
+#### Finding Standard Classification Error of `Random Forest` model on the Training data of `is_violent_recid`
+```{r}
+rf.misclass.2 = 1-(recid.rf.2$confusion[1,1]+recid.rf.2$confusion[2,2])/(recid.rf.2$confusion[1,1]+recid.rf.2$confusion[2,2]+recid.rf.2$confusion[1,2]+recid.rf.2$confusion[2,1])
+rf.misclass.2
+```
+
+> The misclassification rate of Random Forest model on `is_violent_recid` is 7.94%
+
+<a id="importance1"></a>
+#### Construct a variable importance plot of `is_recid`
+```{r}
+varImpPlot(recid.rf.1)
+```
+
+> `count.prior.jail` variable is the most important variable in the `is_recid` training dataset
+
+<a id="importance2"></a>
+#### Construct a variable importance plot of `is_volent_recid`
+```{r}
+varImpPlot(recid.rf.2)
+```
+
+> `count.prior.jail` and `c_change_degree` variables are the most important variable in the `is_violent_recid` training dataset
+
+#### Use the `predict` command to obtain probability estimates on the test data `is_recid`
+```{r}
+predict.rf.1 = predict(recid.rf.1,newdata=recid.test,type="class")
+predict.rf.prob.1 = predict(recid.rf.1,newdata=recid.test,type="prob")
+
+#------
+classMetrics(predict.rf.1,recid.test$is_recid, type = "all")
+
+```
+
+> Accuracy of Random Forest model applied to test dataset of `is_recid` is 79.5% and the misclassification rate is 20.5% 
+
+#### Use the `predict` command to obtain probability estimates on the test data `is_violent_recid`
+```{r}
+predict.rf.2 = predict(recid.rf.2,newdata=recid.test,type="class")
+predict.rf.prob.2 = predict(recid.rf.2,newdata=recid.test,type="prob")
+
+#------
+classMetrics(predict.rf.2,recid.test$is_violent_recid, type = "all")
+
+```
+
+> Accuracy of Random Forest model applied to test dataset of `is_recid` is 92.4% and the misclassification rate is 7.6%
+
+#### The ROC curve for the pruned tree of `is_recid`
+```{r, fig.height = 5, fig.width = 5}
+#roc.rf.1 = roc(recid.test$is_recid,predict.rf.prob.1[,2])
+#plot(roc.rf.1,col="steelblue")
+
+
+# Evaluate the model
+pred <- prediction(predict.rf.prob.1[,2], recid.test$is_recid)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+
+# Plot
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .25, y = .65 ,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+```
+
+> AUC of Random Forest model on `is_recid` is 0.842
+
+#### The ROC curve for the pruned tree  of `is_violent_recid`
+```{r, fig.height = 5, fig.width = 5}
+#roc.rf.2 = roc(recid.test$is_violent_recid,predict.rf.prob.2[,2])
+#plot(roc.rf.2,col="green")
+
+# Evaluate the model
+pred <- prediction(predict.rf.prob.2[,2], recid.test$is_violent_recid)
+roc.perf = performance(pred, measure = "tpr", x.measure = "fpr")
+auc.train <- performance(pred, measure = "auc")
+auc.train <- auc.train@y.values
+
+# Plot
+plot(roc.perf)
+abline(a=0, b= 1)
+text(x = .25, y = .65 ,paste("AUC = ", round(auc.train[[1]],3), sep = ""))
+
+```
+
+> AUC of Random Forest model on `is_recid` is 0.795
+
+### Artificial Neural Network
+
+#### Add New Dictionary
+```{r}
+library(dplyr)
+library(neuralnet)
+library(GGally)
+```
+
+```{r}
+rm(list= ls()[!(ls() %in% c('qda.pred.is_recid', "qda.pred.vis_recid", 
+                            "qda.test.data.r", "qda.test.data.v"))])
+
+recid = read.csv("recid_data.csv", header = TRUE)
+```
+
+#### Delete Irrelevant Columns
+```{r}
+# We don't need peoples' name do predict if that person will recid
+recid$name=NULL
+recid$first=NULL
+recid$last=NULL
+
+# We don't need age because we have age catagory
+####recid$age=NULL
+recid$age_cat=NULL
+
+# Remove anything related to COMPAS
+recid$compas_screening_date=NULL
+recid$decile_score=NULL
+recid$c_days_from_compas=NULL
+
+# Case number/Identification number is an identification of the case, so won't be needed
+recid$r_case_number=NULL
+recid$vr_case_number=NULL
+recid$X=NULL
+recid$person_id=NULL
+
+# Date of birth not needed becasue we have age category
+recid$dob=NULL
+
+# We don't need the what date the person was arrested because getting arrested in specific date has nothing to do with if the person will be recid or not. Also, we have to count of how many times the person was arrested.
+recid$c_arrest_date=NULL
+recid$c_offense_date=NULL
+recid$r_offense_date=NULL
+recid$r_jail_in=NULL
+recid$r_jail_out=NULL
+recid$vr_offense_date=NULL
+
+# vr_charge or r_charge degree is not needed becasue this is a description of violent recidivism
+recid$vr_charge_degree=NULL
+recid$r_charge_degree=NULL
+
+# Not Necessary
+recid$r_days_from_arrest=NULL
+recid$num_r_cases=NULL
+
+
+# reorder the race variables and make Caucasian the baseline 
+recid$race = factor(recid$race, levels = c("Caucasian","African-American","Asian","Hispanic","Native American","Other"))
+```
+
+#### Delete Irrelevant Rows
+```{r}
+# Delete specific rows in c_charge_degree column
+table(recid$c_charge_degree)
+x1 = which(recid$c_charge_degree=="(CO3)")
+recid = recid[-x1,]
+x2 = which(recid$c_charge_degree=="(CT)")
+recid = recid[-x2,]
+x3 = which(recid$c_charge_degree=="(TCX)")
+recid = recid[-x3,]
+x4 = which(recid$c_charge_degree=="(X)")
+recid = recid[-x4,]
+x5 = which(recid$c_charge_degree=="(F5)")
+recid = recid[-x5,]
+x6 = which(recid$c_charge_degree=="(F6)")
+recid = recid[-x6,]
+x7 = which(recid$c_charge_degree=="(NI0)")
+recid = recid[-x7,]
+table(recid$c_charge_degree)
+```
+
+#### Create a New Tab for is_recid outcome in Boolean to operate "Neural Network" Package
+```{r}
+# Change the Outcome Variables to Boolean to operate ANN
+recid.new = recid %>% mutate(is_recid = ifelse(is_recid=="yes",TRUE,FALSE),is_violent_recid = ifelse(is_violent_recid=="yes",TRUE,FALSE))
+
+
+
+# Change Categorical Variables to Dummy Variables
+recid.new = fastDummies::dummy_cols(recid.new)
+
+# Change Numberical variables to fit from [0,1]
+scale01 <- function(x){
+  (x - min(x)) / (max(x) - min(x))
+}
+recid.new = recid.new %>% mutate(juv_fel_count=scale01(juv_fel_count), juv_misd_count=scale01(juv_misd_count),juv_other_count=scale01(juv_other_count),priors_count=scale01(priors_count),count.prior.jail=scale01(count.prior.jail),count.prior.prison=scale01(count.prior.prison),age=scale01(age))
+
+# Remove Redundant Columns
+recid.new$sex=NULL
+recid.new$race=NULL
+recid.new$timeinjail=NULL
+recid.new$timeinprison=NULL
+recid.new$is.recid=NULL
+recid.new$c_charge_degree=NULL
+
+
+# Change Names of Columns
+names(recid.new)[8] = "count_prior_jail"
+names(recid.new)[9] = "count_prior_prison"
+names(recid.new)[13] = "race_african_american"
+names(recid.new)[16] = "race_native_american"
+names(recid.new)[21] = "f2"
+names(recid.new)[20] = "f1"
+names(recid.new)[22] = "f3"
+names(recid.new)[25] = "f7"
+names(recid.new)[26] = "m1"
+names(recid.new)[27] = "m2"
+names(recid.new)[28] = "mo3"
+
+# Remove extra unnecessary columns
+names(recid.new)[18] = "co3"
+names(recid.new)[19] = "ct"
+names(recid.new)[23] = "f5"
+names(recid.new)[24] = "f6"
+names(recid.new)[29] = "ni0"
+names(recid.new)[30] = "tcx"
+names(recid.new)[31] = "x"
+
+recid.new$co3 =NULL
+recid.new$ct=NULL
+recid.new$f5=NULL
+recid.new$f6=NULL
+recid.new$ni0=NULL
+recid.new$tcx=NULL
+recid.new$x=NULL
+```
+
+> Neural Networks only deal with quantitative variables so I had to clean up the data. All the factor variables were created as dummny variables, then the original factor variables were deleted. The independent variables were normailzed so that they are scaled in an equal manner
+
+#### Create Train and Test data set
+```{r}
+set.seed(222)
+ind = sample(2,nrow(recid.new),replace=TRUE,prob=c(0.7,0.3))
+recid.training = recid.new[ind==1,]
+recid.testing = recid.new[ind==2,]
+
+recid.test.1 = recid[ind==2,]
+```
+
+
+#### ANN Model with Multiple Repetitions and 2 Hidden Nodes of `is_recid`
+```{r}
+set.seed(333)
+recid.ann.1 = neuralnet(is_recid ~ age + juv_fel_count + juv_misd_count + juv_other_count + priors_count + count_prior_jail + count_prior_prison + sex_Female + sex_Male + race_african_american + race_Asian + race_Caucasian    + race_Hispanic + race_native_american + race_Other + f1 + f2 + f3 + f7 + m1 + m2 + mo3, data=recid.training, linear.output=FALSE, err.fct='ce', likelihood=TRUE,hidden=1,lifesign="full",rep=5)
+```
+
+> Neural Network model was applied to `is_recid` training dataset. The first repetition had the lowest error rate
+
+#### ANN Model with Multiple Repetitions and 2 Hidden Nodes of `is_violent_recid`
+```{r}
+set.seed(333)
+recid.ann.2 = neuralnet(is_violent_recid ~ age + juv_fel_count + juv_misd_count + juv_other_count + priors_count + count_prior_jail + count_prior_prison + sex_Female + sex_Male + race_african_american + race_Asian + race_Caucasian    + race_Hispanic + race_native_american + race_Other + f1 + f2 + f3 + f7 + m1 + m2 + mo3, data=recid.training, linear.output=FALSE, err.fct='ce', likelihood=TRUE,hidden=1,lifesign="full",rep=4)
+```
+
+> Neural Network model was applied to `is_violent_recid` training dataset. The second repetition had the lowest error rate
+
+#### Plot the Neural Network of `is_recid`
+```{r}
+plot(recid.ann.1, rep = 1)
+```
+
+> The Neural Network model on `is_recid`, African-American has weight of 5.48 and Caucasian has weight of 6.64. The model is not racially bias towards African-American
+
+#### Plot the Neural Network of `is_violent_recid`
+```{r}
+plot(recid.ann.2, rep = 1)
+```
+
+> The Neural Network model on `is_violent_recid`, African-American has weight of 4.28 and Caucasian has weight of 4.82. The model is not racially bias towards African-American
+
+#### Confusion Matrix and Misclassification Rate on Training & Testing Data on NN2
+```{r}
+# Remove the output variable before using the function "compute"
+ann.test.out.1 = neuralnet::compute(recid.ann.1,recid.testing[,c(-6,-7)],rep=1)
+
+# Create a Confusion Matrix to find Misclassification Rate
+ann.test.out.result.1 = ann.test.out.1$net.result
+ann.test.pred.1 = ifelse(ann.test.out.result.1>0.5,1,0)
+ann.test.tab.1 = table(recid.test.1$is_recid,ann.test.pred.1)
+ann.test.tab.1
+
+
+#------
+#classMetrics(ann.test.pred.1,recid.test.1$is_recid, type = "all")
+
+mis.1 = 1-sum(diag(ann.test.tab.1))/sum(ann.test.tab.1)
+mis.1
+```
+
+> The Neural Network model on `is_recid` has misclassification rate of 31.8%
+
+```{r}
+# Remove the output variable before using the function "compute"
+ann.test.out.2 = neuralnet::compute(recid.ann.2,recid.testing[,c(-6,-7)],rep=1)
+
+# Create a Confusion Matrix to find Misclassification Rate
+ann.test.out.result.2 = ann.test.out.2$net.result
+ann.test.pred.2 = ifelse(ann.test.out.result.2>0.5,1,0)
+ann.test.tab.2 = table(recid.test.1$is_violent_recid,ann.test.pred.2)
+ann.test.tab.2
+
+#------
+#classMetrics(ann.test.pred.2,recid.test.1$is_violent_recid, type = "all")
+
+mis.2 = 1-sum(diag(ann.test.tab.2))/sum(ann.test.tab.2)
+mis.2
+```
+
+> The Neural Network model on `is_violent_recid` has misclassification rate of 7.49%
+
+#### Bar Plot of`is_recid`
+```{r}
+# Bar plot of results
+class.ann = tibble('Network' = rep(c("NN2"), each = 3), 
+                       'Metric' = rep(c('AIC', 'BIC', 'ce Error'), length.out = 3),
+                       'Value' = c(recid.ann.1$result.matrix[4,1], 
+                                   recid.ann.1$result.matrix[5,1], recid.ann.1$result.matrix[1,1]))
+
+class.ann %>%
+  ggplot(aes(Network, Value, fill = Metric)) +
+  geom_col(position = 'dodge')  +
+  ggtitle("AIC, BIC, and Cross-Entropy Error of the Classification ANNs for Recidivism")
+```
+
+#### Bar Plot of`is_violent_recid`
+```{r}
+# Bar plot of results
+class.ann = tibble('Network' = rep(c("NN2"), each = 3), 
+                       'Metric' = rep(c('AIC', 'BIC', 'ce Error'), length.out = 3),
+                       'Value' = c(recid.ann.2$result.matrix[4,1], 
+                                   recid.ann.2$result.matrix[5,1], recid.ann.2$result.matrix[1,1]))
+
+class.ann %>%
+  ggplot(aes(Network, Value, fill = Metric)) +
+  geom_col(position = 'dodge')  +
+  ggtitle("AIC, BIC, and Cross-Entropy Error of the Classification ANNs for Volent Recidivism")
+```
+
+### Random Forest model & Neural Network Findings & Summary
+
+Findings
+Two Year Recidivism
+I found that the Random Forest model resulted in better accuracy compared to the Neural Network model(A = 0.795 vs. 0.791). 
+The misclassification rate was 0.205 for the Random Forest model and 0.318 for the Neural Network model, which the Random Forest model performed better. I would select to use the Random Forest model to predict recidivism.
+
+**Was the Model Biased?**
+
+Unfortunately, it is difficult to measure if the model is biased with the Random Forest model because the measure of importance of each variable can be measured but which specific race will result in higher “is_recid” can’t be found. However, I can estimate the race bias in the model by predicting the model on the test dataset when it is divided by African-American and Caucasian subgroups. The FPR of Caucasian individuals is ~10% lower than the FPR of African-American individuals. This result suggests the model predicted a African-American group as will recidivate in the future but had a higher proportion of the predicted individual was false. From this analysis, my Random Forest model for “is_recid” is racially biased.
+
+![](C:/Users/germa/OneDrive/GraduateSchool/Classes_Spring/Mini 4/Data Mining/Group Project/Final/table 1.png)
+
+Neural network models are less biased because the weight on African-American individuals is 5.48; in contrast, the weight on Caucasian individuals is 6.64. 
+
+Violent Recidivism
+I found that the Random Forest model resulted in better accuracy compared to the Neural Network model(A = 0.924). 
+The misclassification rate was 0.076 for the Random Forest model and 0.075 for the Neural Network model, which the neural network model performed better. However, there is very small difference in the misclassification rate but a lot better accuracy for Random Forest model so I will pick the Random Forest model for “is_violent_recid”
+
+**Was the Model Biased?**
+
+Unfortunately, it is difficult to measure if the model is biased with the Random Forest model because the measure of importance of each variable can be measured but which specific race will result in higher “is_violent_recid” can’t be found. However, I can estimate the race bias in the model by predicting the model on the test dataset when it is divided by African-American and Caucasian subgroups. The FPR of Caucasian individuals is ~0.022% lower than the FPR of African-American individuals. This result suggests my Random Forest model for “is_violent_recid” is racially unbiased.
+
+![](C:/Users/germa/OneDrive/GraduateSchool/Classes_Spring/Mini 4/Data Mining/Group Project/Final/table 2.png)
+
+Neural network models are less biased because the weight on African-American individuals is 5.48; in contrast, the weight on Caucasian individuals is 6.64. 
+
+**In Summary**
+
+- Random Forest model performs better than Neural Network model with lower misclassification rate (0.21 vs. 0.32) [`is_recid]
+
+- Random Forest model performs similar compared to Neural Network model with misclassification rate (0.076 vs. 0.075) [`is_violent_recid]
+
+- By comparing the two models, I can conclude that the Random Forest model performs better than the Neural Network model
+
+<a href="#top">Back to top</a>
+
+## JOSE -- Linear Regression & K-Nearest-Neighbors Classifier
+My part of the analysis consists of taking the recidivism data set and applying simple linear regression and k-nearest neighbor as classification methods. The analysis is applied by breaking down the data set into violent and non-violent recidivism. Before applying these methods, however, I use k-means methods to the data to discern whether there are any discernible clusters of observations within the data set. 
+
+### Data Selection
+```{r}
+rm(list= ls()[!(ls() %in% c('qda.pred.is_recid', "qda.pred.vis_recid", 
+                            "qda.test.data.r", "qda.test.data.v"))])
+
+recid <- read.csv(file = 'recid_data.csv', row.names = 1)
+recid <- recid[which(recid$decile_score >= 0),]
+
+# We don't need peoples' name do predict if that person will recid
+recid$name=NULL
+recid$first=NULL
+recid$last=NULL
+
+# We don't need age because we have age catagory
+####recid$age=NULL
+recid$age_cat=NULL
+
+# Remove anything related to COMPAS
+recid$compas_screening_date=NULL
+recid$decile_score=NULL
+recid$c_days_from_compas=NULL
+
+# Case number/Identification number is an identification of the case, so won't be needed
+recid$r_case_number=NULL
+recid$vr_case_number=NULL
+recid$X=NULL
+recid$person_id=NULL
+
+# Date of birth not needed becasue we have age category
+recid$dob=NULL
+
+# We don't need the what date the person was arrested because getting arrested in specific date has nothing to do with if the person will be recid or not. Also, we have to count of how many times the person was arrested.
+recid$c_arrest_date=NULL
+recid$c_offense_date=NULL
+recid$r_offense_date=NULL
+recid$r_jail_in=NULL
+recid$r_jail_out=NULL
+recid$vr_offense_date=NULL
+
+# vr_charge or r_charge degree is not needed becasue this is a description of violent recidivism
+recid$vr_charge_degree=NULL
+recid$r_charge_degree=NULL
+
+# FOR NOW
+#recid$c_charge_degree=NULL
+recid$r_days_from_arrest=NULL
+
+# Change na to 0
+#recid$num_r_cases[is.na(recid$num_r_cases)]=0
+
+recid$num_r_cases=NULL
+
+names(recid)
+avgage.nvrecid <- recid %>% group_by(is_recid) %>% summarise(mean(age))
+avgage.vrecid <- recid %>% group_by(is_violent_recid) %>% summarise(mean(age))
+```
+
+### Divide data intro training and test sets before modeling
+```{r}
+
+## extract training and test data sets
+train <- sample(1:nrow(recid), round(nrow(recid)/2, 0))
+test <- recid[-train,]
+#dim(test)
+#length(train)
+
+```
+
+### K-Means exploration
+
+#### : Principal Components Analysis
+```{r}
+# example ISLR page 401
+#extract numeric values
+pca.nv <- recid$age
+pca.nv <- as.data.frame(pca.nv)
+pca.nv <- rename(pca.nv, c("pca.nv" = "age"))
+
+
+pca.nv["juv_fel_count"] = recid$juv_fel_count
+pca.nv["juv_misd_count"] = recid$juv_misd_count
+pca.nv["juv_other_count"] = recid$juv_other_count
+pca.nv["priors_count"] = recid$priors_count
+pca.nv["juv_fel_count"] = recid$juv_fel_count
+pca.nv["count.prior.jail"] = recid$count.prior.jail
+pca.nv["count.prior.prison"] = recid$count.prior.prison
+pca.nv["timeinjail"] = recid$timeinjail
+pca.nv["timeinprison"] = recid$timeinprison
+
+#mean
+apply(pca.nv, 2, mean)
+#variance
+apply(pca.nv, 2, var)
+
+pr.out = prcomp(pca.nv, scale = TRUE)
+pr.out$rotation
+biplot(pr.out, scale = 0)
+
+pr.out$rotation=-pr.out$rotation
+pr.out$x=-pr.out$x
+biplot (pr.out , scale =0)
+
+pr.var =pr.out$sdev ^2
+pve=pr.var/sum(pr.var)
+
+plot(pve,xlab="Principal Component",ylab="Proportion of Variance Explained", ylim=c(0,1),type='b')
+
+plot(cumsum(pve),xlab=" Principal Component ", ylab ="Cumulative Proportion of Variance Explained ", ylim=c(0,1), type='b')
+#names(pr.out)
+
+# We pick PC1 = priors_count and PC2 = juv_other_count 
+```
+**PCA analysis shows PC1 = priors_count PC2 = juv_other_count and PC3 = age**
+
+#### K-means classification using priors_count and juv_other_count
+
+> Are there discernable groups or clusters of data within the recid data set? If so, can those clusters help us discern between recividist and non-recividist observations.
+
+```{r}
+# extract age and prior count and place in one data frame
+kmdf <- recid$priors_count
+kmdf <- as.data.frame(kmdf)
+kmdf["priors_count"] <- recid$priors_count
+kmdf["juv_other_count"] = recid$juv_other_count
+#kmdf
+kmdf <- kmdf[,-1]
+#dim(kmdf)
+km.out = kmeans(kmdf,2,nstart = 10)
+#km.out$cluster
+
+plot(kmdf, col =(km.out$cluster+1) , main="K-Means Clustering Results with K=2", xlab ="priors_count", ylab="juv_other_count", pch= 20, cex =1)
+
+ggplot(recid, aes(x = priors_count, y = juv_other_count, col = as.factor(is_recid), shape = as.factor(is_recid))) + geom_point() + scale_color_manual(values = c("green", "red"))+ ggtitle("Non-violent Recid: priors_count vs juv_other_count")
+
+
+#plot for violent recid
+ggplot(recid, aes(x = priors_count, y = juv_other_count, col = as.factor(is_violent_recid), shape = as.factor(is_violent_recid))) + geom_point() + scale_color_manual(values = c("green", "red")) + ggtitle("Violent Recid: priors_count vs juv_other_count")
+#CLUSTERED TWO GROUPS. NEED TO STADARIZE AGE
+
+```
+
+#### K-means using priors_count and age
+```{r}
+# extract age and prior count and place in one data frame
+kmdf <- recid$age
+kmdf <- as.data.frame(kmdf)
+kmdf["age"] <- recid$age
+kmdf["priors_count"] = recid$priors_count
+#kmdf
+kmdf <- kmdf[,-1]
+#kmdf.nv["is_recid"] <- nv_recid$is_recid
+#dim(kmdf.nv)
+km.out = kmeans(kmdf,2,nstart = 10)
+#km.out$cluster
+
+plot(kmdf, col =(km.out$cluster+1) , main="K-Means Clustering Results with K=2", xlab ="age", ylab="priors_count", pch= 20, cex =2)
+
+ggplot(recid, aes(x = age, y = priors_count, col = as.factor(is_recid), shape = as.factor(is_recid))) + geom_point() + scale_color_manual(values = c("green", "red"))+ ggtitle("Non-violent Recid")
+
+
+#plot for violent recid
+ggplot(recid, aes(x = age, y = priors_count, col = as.factor(is_violent_recid), shape = as.factor(is_violent_recid))) + geom_point() + scale_color_manual(values = c("green", "red")) + ggtitle("Violent Recid")
+#CLUSTERED TWO GROUPS. NEED TO STADARIZE AGE
+
+```
+
+> Using K-means methods for the violent and non-violent recividists data sets using age and prior_counts seems to be an ineffective method of identifying clusters within the data sets as the distributions of recividists and non-recividists for the variables age, and priors_count seem to overlap.
+> On the other hand, applying K-means using priors_count and juv_other_count for non-violent recividists seems to be a good option to identify clusters of observations.
+
+### Simple Linear Regression
+```{r}
+# Find best predictors of recividism for linear regression
+regfit.violent <- regsubsets(is_violent_recid ~. -is_recid, recid, nvmax = 5)
+#summary(regfit.violent)
+
+regfit.nonviolent <- regsubsets(is_recid ~. -is_violent_recid, recid, nvmax = 5)
+#summary(regfit.nonviolent)
+```
+
+> The following variables are the strongest predictors of recividism in a linear regression context:
+- Violent: count.prior.jail, c_charge_degree(F3), juv_misd_count
+- Nonviolent: count.prior.jail, age, priors_count.
+
+> Next, we'll produce a linear fit using the best predictors listed above for both the violent and non-violent recividist data set
+
+```{r}
+
+lmfit.nv <- lm(is_recid~count.prior.jail+age+priors_count, data = recid, subset = train)
+mse.nv <- with(recid, mean((is_recid-predict(lmfit.nv,recid))[-train]^2))
+mse.nv
+
+lmfit.v <- lm(is_violent_recid~count.prior.jail + juv_misd_count, data = recid, subset = train)
+mse.v <- with(recid, mean((is_violent_recid-predict(lmfit.v,recid))[-train]^2))
+mse.v
+
+#linear regression plots
+qplot(data = recid, x = count.prior.jail, y = is_recid) + stat_smooth(method = "lm", aes(colour = "linear")) + stat_smooth(method = "lm", formula = y~poly(x,2), aes(colour = "quadratic")) + stat_smooth(method = "lm" , formula = y~poly(x,3), aes(colour = "cubic")) + scale_colour_discrete("Model") + theme_bw()
+
+qplot(data = recid, x = count.prior.jail, y = is_violent_recid) + stat_smooth(method = "lm", aes(colour = "linear")) + stat_smooth(method = "lm", formula = y~poly(x,2), aes(colour = "quadratic")) + stat_smooth(method = "lm" , formula = y~poly(x,3), aes(colour = "cubic")) + scale_colour_discrete("Model") + theme_bw()
+
+```
+
+#### K-fold validation
+```{r}
+#K-10 CV for non-violent recividism
+cv.error10.nv <- rep(0,10)
+for (i in 1:10) {
+    glm.nv <- glm(is_recid~poly(count.prior.jail,i), data = recid)
+    cv.error10.nv[i] <- cv.glm(recid, glm.nv, K = 10)$delta[1]
+}
+
+cv.error10.nv
+
+cv.df10nv <- data.frame(deg=1:10, cv_error = cv.error10.nv)
+qplot(data=cv.df10nv, x = deg, y = cv.error10.nv, geom = "line", ylab = "10-fold CV Error estimate", main = "Non-violent recid") + geom_point()
+
+which.min(cv.error10.nv)
+
+#K-10 CV for violent recividism
+cv.error10.v <- rep(0,10)
+for (i in 1:10) {
+    glm.v <- glm(is_violent_recid~poly(count.prior.jail,i), data = recid)
+    cv.error10.v[i] <- cv.glm(recid, glm.v, K = 10)$delta[1]
+}
+
+cv.error10.v
+
+cv.df10v <- data.frame(deg=1:10, cv_error = cv.error10.v)
+qplot(data=cv.df10v, x = deg, y = cv.error10.v, geom = "line", ylab = "10-fold CV Error estimate", main = "Violent recid") + geom_point()
+
+which.min(cv.error10.v)
+
+```
+
+### K-NN Classification
+```{r}
+#split data sets into violent and non-violent recividists (sex, race, and charge degree removed as non-numeric and thus cannot be normalized)
+recid.nv <- recid[c("is_recid","age", "juv_fel_count", "juv_misd_count","juv_other_count", "priors_count","count.prior.jail","count.prior.prison","timeinjail","timeinprison")]
+
+recid.v <- recid[c("is_violent_recid","age", "juv_fel_count", "juv_misd_count","juv_other_count", "priors_count","count.prior.jail","count.prior.prison","timeinjail","timeinprison")]
+
+#Normalization of data
+normalize <- function(x) {
+    return((x-min(x))/(max(x) - min(x))) }
+
+recid.nv.norm <- as.data.frame(lapply(recid.nv[,2:10], normalize))
+recid.v.norm <- as.data.frame(lapply(recid.v[,2:10], normalize))
+
+#create training and test data sets for non-violent recividist classification
+train.nv <- recid.nv.norm[1:4911,]
+test.nv <- recid.nv.norm[4912:9822,]
+#create training and test data sets for violent recividists classification
+train.v <- recid.v.norm[1:4911,]
+test.v <- recid.v.norm[4912:9822,]
+
+recid.nv.pred <- knn(train.nv, test.nv, recid.nv[1:4911,1], k= 90, prob = TRUE)
+conf.nv <- table(recid.nv.pred, recid.nv[4912:9822,1])
+conf.nv
+tpr.nv <- (conf.nv[2,2])/(conf.nv[2,1]+conf.nv[2,2])
+fpr.nv <- (conf.nv[1,2])/(conf.nv[1,1]+conf.nv[1,2])
+acc.nv <- (conf.nv[2,2]+conf.nv[1,1])/(conf.nv[1,1]+conf.nv[1,2]+conf.nv[2,2]+conf.nv[2,1])
+acc.nv
+tpr.nv
+fpr.nv
+
+
+#KNN prediction for violent recividists
+recid.v.pred <- knn(train.v, test.v, recid.v[1:4911,1], k= 7, prob = TRUE)
+conf.v <- table(recid.v.pred, recid.v[4912:9822,1])
+conf.v
+tpr.v <- (conf.v[2,2])/(conf.v[2,1]+conf.v[2,2])
+fpr.v <- (conf.v[1,2])/(conf.v[1,1]+conf.v[1,2])
+acc.v <- (conf.v[2,2]+conf.v[1,1])/(conf.v[1,1]+conf.v[1,2]+conf.v[2,2]+conf.v[2,1])
+acc.v
+tpr.v
+fpr.v
+
+##ROC CURVES
+#non-violent recid
+prob.nv <- attr(recid.nv.pred, "prob")
+roc.nv <- roc(recid.nv[4912:9822,1], prob.nv)
+plot(roc.nv, col = "green", main = "Non-violent recid ROC", legacy.axes = TRUE)
+
+#violent recid
+prob.v <- attr(recid.v.pred, "prob")
+roc.v <- roc(recid.v[4912:9822,1], prob.v)
+plot(roc.v, col = "green", main  = "Violent recid ROC", legacy.axes = TRUE)
+
+
+
+```
+
+> K-NN classifier seems to perform well for both violent and non-violent recividist data sets. 
+- For non-violent recividist, a K value calculated as sqrt of n observations seems to maximize accuracy.
+- For violent recividist, large numbers of K seem to affect accuracy. Settling for K value of 7. 
+
+> Does the K-NN method tend to have a higher FPR for African-Americans compared to Caucasians? We perform this analysis by looking at FPRs for both group data subsets
+
+```{r}
+recid.nv <- recid[c("race","is_recid","age", "juv_fel_count", "juv_misd_count","juv_other_count", "priors_count","count.prior.jail","count.prior.prison","timeinjail","timeinprison")]
+
+recid.v <- recid[c("race","is_violent_recid","age", "juv_fel_count", "juv_misd_count","juv_other_count", "priors_count","count.prior.jail","count.prior.prison","timeinjail","timeinprison")]
+
+# Non-violent recividist classification: African-American vs. Caucasian
+b.nv <- recid.nv[which(recid.nv$race == "African-American"),]
+w.nv <- recid.nv[which(recid.nv$race == "Caucasian"),]
+
+recid.nv.b <- b.nv[c("is_recid","age", "juv_fel_count", "juv_misd_count","juv_other_count", "priors_count","count.prior.jail","count.prior.prison","timeinjail","timeinprison")]
+
+recid.nv.w <- w.nv[c("is_recid","age", "juv_fel_count", "juv_misd_count","juv_other_count", "priors_count","count.prior.jail","count.prior.prison","timeinjail","timeinprison")]
+
+recid.nvb.norm <- as.data.frame(lapply(recid.nv.b[,2:10], normalize))
+recid.nvw.norm <- as.data.frame(lapply(recid.nv.w[,2:10], normalize))
+
+#training sets for both black and white groups
+train.nvb <- recid.nvb.norm[1:2456,]
+test.nvb <- recid.nvb.norm[2457:4912,]
+train.nvw <- recid.nvw.norm[1:1679,]
+test.nvw <- recid.nvw.norm[1680:3358,]
+
+#KNN classification for non-violent black recividists
+recid.nvb.pred <- knn(train.nvb, test.nvb, recid.nv.b[1:2456,1], k= 50)
+conf.nvb <- table(recid.nvb.pred, recid.nv.b[2457:4912,1])
+fpr.nvb <- (conf.nvb[1,2])/(conf.nvb[1,1]+conf.nvb[1,2])
+conf.nvb
+fpr.nvb
+
+#KNN classification for non-violent white recividists
+recid.nvw.pred <- knn(train.nvw, test.nvw, recid.nv.w[1:1679,1], k= 50)
+conf.nvw <- table(recid.nvw.pred, recid.nv.w[1680:3358,1])
+conf.nvw
+fpr.nvw <- (conf.nvw[1,2])/(conf.nvw[1,1]+conf.nvw[1,2])
+fpr.nvw
+
+## Violent recividist classification: African-American vs. Caucasian
+# Obtain data subsets for violent recividists for both groups
+b.v <- recid.v[which(recid.v$race == "African-American"),]
+w.v <- recid.v[which(recid.v$race == "Caucasian"),]
+
+recid.v.b <- b.v[c("is_violent_recid","age", "juv_fel_count", "juv_misd_count","juv_other_count", "priors_count","count.prior.jail","count.prior.prison","timeinjail","timeinprison")]
+
+recid.v.w <- w.v[c("is_violent_recid","age", "juv_fel_count", "juv_misd_count","juv_other_count", "priors_count","count.prior.jail","count.prior.prison","timeinjail","timeinprison")]
+
+#normalize data sets for violent recid for both white and black groups
+recid.vb.norm <- as.data.frame(lapply(recid.v.b[,2:10], normalize))
+recid.vw.norm <- as.data.frame(lapply(recid.v.w[,2:10], normalize))
+
+#obtain training and test datasets for both groups
+train.vb <- recid.vb.norm[1:2456,]
+test.vb <- recid.vb.norm[2457:4913,]
+train.vw <- recid.vw.norm[1:1679,]
+test.vw <- recid.vw.norm[1680:3358,]
+
+#KNN prediction model for violent black
+recid.vb.pred <- knn(train.vb, test.vb, recid.v.b[1:2456,1], k= 12)
+conf.vb <- table(recid.vb.pred, recid.v.b[2457:4913,1])
+fpr.vb <- (conf.vb[1,2])/(conf.vb[1,1]+conf.vb[1,2])
+conf.vb
+fpr.vb
+
+#KNN prediction model for violent white
+recid.vw.pred <- knn(train.vw, test.vw, recid.v.w[1:1679,1], k= 12)
+conf.vw <- table(recid.vw.pred, recid.v.w[1680:3358,1])
+conf.vw
+fpr.vw <- (conf.vw[1,2])/(conf.vw[1,1]+conf.vw[1,2])
+fpr.vw
+```
+
+### Findings and Summary
+
+**K-means Clustering**
+
+Principal component analysis (PCA) reveals the principal components of variance in the data set to be as follows: PC1 = priors_count PC2 = juv_other_count and PC3 = age. I apply these variables in the K-means method to explore whether we can find discernable groups of clusters in the data that might be in line with differences between recividists and non-recividist. The main findings under this method are:
+
+* Using K-means methods for the violent and non-violent recividists data sets using age and prior_counts seems to be an ineffective method of identifying clusters within the data sets as the distributions of recividists and non-recividists for the variables age, and priors_count seem to overlap.
+
+* Applying K-means using priors_count and juv_other_count for non-violent recividists seems to be a good option to identify clusters of observations for the non-violent recividist data set.. Recividists seem to be concentrated among observations with high count of arrests (>10).
+
+**Simple Linear Regression**
+
+I begin by using the regsubsets fuction to find the best 5 predictors of both violent and non-violent recividism. The output reveals strongest predictors by group as follows:
+
+> Violent: count.prior.jail, c_charge_degree(F3), juv_misd_count
+> Nonviolent: count.prior.jail, age, priors_count.
+
+Next, a linear regression is performed using the variables specified above for the non-violent and violent reciviist data sets. The model is trained using a random subset of the data and is tested on the unseen observations. Two plots are shown in the output for the strongest predictor of recividism (count.prior.jail) in linear, quadratic and cubed form.
+
+The next code chunk performs a 10-fold cross validation to determine the n-degree polynomial with the lowest test error. The results are:
+
+> A degree level  2 polynomial  yields lowest estimate of test error for the non-violent recividism data set
+> A degree level 2  polynomial yields lowest estimate of test error for the violent recividism data set.
+
+**K-NN Classification**
+
+For this method, I begin by, again, splitting the data set into violent and non-violent recividists. Since the K-NN method required normalization of all observations, all non-numeric variables are removed from the data sets, which include: sex, race, and charge degree. All observations are normalized once the data modifications listed above are performed.
+
+Next, I extract a training and test data set for both violent and non-violent recividists. K-NN is done on both data sets. A confusion matrix, TPR, FPR, and accuracy rates are computed and its respective ROC is shown. K-NN classification reveals the following:
+> K-NN classifier seems to perform well for both violent and non-violent recividist data sets. 
+- For non-violent recividist, a K value calculated as sqrt of n observations seems to maximize accuracy.
+- For violent recividist, large numbers of K seem to affect accuracy. Settling for K value of 7. 
+
+I continue to use K-NN to answer the following question: Does the K-NN method tend to have a higher FPR for African-Americans compared to Caucasians? In other words, is the model biased?
+
+**Was the Model Biased?**
+
+Both the linear and K-NN methods predict or classify African-American individuals as recividists at a higher rate than Caucasians. I believe this is due to the fact that the proportion of African-American recividists (both violent and non-violent) are higher than any other group in the data set. Even when not using race as a predictor, the models seem to classify or predict recividism at a higher rate for African-Americans.
+
+For K-NN classification, I attempt to analyze bias in a different way. Instead of looking at the proportion of individuals classified as likely to be revividists, I use the false positive rate to see if African-Americans are being misclassified as recividists at a higher rate than Caucasians. I do this by dividing the non-violent and violent recividist data sets by race group (African-Americans and Caucasians).  The data is then put through the same process of normalization and the K-NN method is applied. The result is 4 confusion matrices:
+
+![](C:/Users/germa/OneDrive/GraduateSchool/Classes_Spring/Mini 4/Data Mining/Group Project/Final/Jose Table.png)
+
+A comparison of FPRs for data subsets for African-American and Caucasian observations reveal that the difference in misclassification as non-violent recividists is small. For the African-American group, K-NN FPR is 0.233. For the Caucasian subset, FPR is 0.206. The difference of .03 percentage points does not seem significant.
+
+A comparison of FPRs for the non-violent recid data set suggests that the K-NN does not erroneously classify African-Americans as recividists at a higher rate than the Caucasian group. From this analysis, I conclude that the models themselves are not biased. Rather, bias might be inherent in the way African-Americans are arrested at higher-rates by law enforcement.
+
+<a href="#top">Back to top</a>
+
+# Model Selection
+Based on all of our models we selected the [QDA](#qdamodels) for our model of choice. It had the lowest misclassification rates out of all of all of the models that we decided to explore, at misclassification rates of roughly 8% for Two-Year Recidivism (compared to the average of 18 - 20%), and about 4% for Violent Recidivism (compared to the average of 7 - 8%). Again, we decided to go with the lowest misclassification rate, because we believed that COMPAS had an accuracy problem -- the COMPAS algorithm was faced with misclassifying Black defendants more-so than White defendants. Our QDA model is also not necessarily biased by groups:
+
+**[Two-Year-Recidivism Bias](#qda1bias)**:
+
+We see that, even after removing African Americans from the dataset and running an ANOVA, that the differences are still statistically significant at the .05 level. This means that, visually, White offenders would be the next highest difference compared to other races. We take this to mean that the QDA model predicted Two Year Recidivism Rates unbiased across racial groups. In other words, it is correctly capturing the trends we see in the Two Year Recidivism EDA.
+
+The QDA also predicts younger people as recidivating more than older people, as well as males more than females. This accurately captures the trends we saw in the Two Year Recidivism EDA.
+
+**[Violent Recidivism Bias](#qda2bias)**:
+
+Similarly, we see that after removing African Americans from the dataset and running an ANOVA on Violent Recidivism, significant differences do exist. Again, we take this to mean that the QDA model predicted Violent Recidivism Rates unbiased across racial groups. In other words, QDA is correctly capturing the trends that we saw in Violent Recidivism EDA.
+
+Younger people are also predicted to violently recidivate more than older people, as with males more than females. We believe that the QDA model accurately captures the trends we observed in the Violent Recidivism EDA.
+
+Further, in order to accurately compare our model with the COMPAS predictive accuracy, we needed to calculate the concordance rate. This is because the cox model used by Northpointe calculates predictive accuracy via concordance. What follows is our calculation for both Two Year Recidivism and Violent Recidivism.
+
+## Concordance for Comparison with COMPAS
+```{r}
+#Is_Recid
+qda.pred.is_recid <- as.numeric(qda.pred.is_recid)
+qda.recid.conc <- Concordance(qda.test.data.r, qda.pred.is_recid)
+
+qda.recid.conc
+```
+
+> According to Angwin and colleagues (2016), Northpointe quoted a concordance rate of 68%, but in ProPublica's analysis, they were only able to achieve a 63% concordance rate. Unfortunately, our concordance rate for Two Year Recidivism is only 40.4% concordance, a `r abs(round(((.404 - .68)/.68)*100, 2))`% decrease.
+
+```{r}
+#Is_Violent_Recid
+qda.pred.vis_recid<- as.numeric(qda.pred.vis_recid)
+qda.vrecid.conc <- Concordance(qda.test.data.v, qda.pred.vis_recid)
+
+qda.vrecid.conc
+```
+
+> Angwin and colleagues (2016) also found a concordance rate of about 65.1% for Violent Recidivism. However, the QDA model was only able to achieve 19.03% concordance, a `r abs(round(((.1903 - .651)/.651)*100, 2))`% decrease.
+
+In the end, our model was indeed not as accurate as Northpointe's cox model in both Two Year and Violent Recidivism.
+
+## Important Predictors for Two-Year and Violent Recidivism Rates
+In terms of importance, we believed that the Random Forest importance plots would show us the most important predictors for both the two year and violent recidivism rates. These specific plots can be found [here](#importance1) and [here](#importance2) in the document, respectively. We found that:
+
+1.`count.prior.jail` was the most important predictor of Two-Year Recidivism rates AND
+2. `count.prior.jail` was also the most important predictor of Violent Recidivism rates
+
+Both of these variables are described as the 'number of times defendant was booked in jail' and shows the importance that the more arrests that an individual has, the more likely the person is to recidivate, and this is intuitive.
+
+**How do these compare?**
+The `count.prior.jail` is the most important variable compared to both cases. However, the MeanDecreaseAccuracy for `is_recid`'s `count.prior.jail` is close to 200 compared to 40 for `is_violent_recid`. This suggests the `is_recid` Random Forest model highly depend on the `count.prior.jail` variable. In contrast, `is_violent_recid` Random Forest model give more importance to other 6 variables.
+
+## Comparing Classifications to COMPAS
+Unfortunately, the QDA model doesn't easily output coefficients for us to compare to the COMPAS model. We also don't have the *exact* Northpointe COMPAS model and their classifications to compare. However, looking  at the predicted graphs [here](#qda1bias), we can easily see that the QDA predicts African-Americans as recidivating (and violently recidivating) more than White defendants. Angwin and colleagues (2016) found the same issues in the COMPAS model, for both two-year recidivism and violent recidivism. As such, we do not have any *huge* systematic differences between our chosen model and the COMPAS model because they produce similar classifications for the same race, sex, and age groups.
+
+# Discussion
+
+## Data Limitations
+In terms of the limitations of the data in terms of the bias problem, we wanted to bring to attention the fact that the data would be considered 'biased'. We found in our EDA that African-Americans, younger people, and males all tend to recidivate more. Angwin and colleagues used Northpointe's COMPAS scores to determine if COMPAS itself was biased. Northpointe would use these scores and plug them into a cox model to predict recidivism. It's clear that using the score could lead to bias. However, even without using the COMPAS score included in the data set, we can see that young African-American males will typically recidivate more. A model trained on this data will train itself to capture the trends it sees in the data. If the data appear this way, it can make our models appear biased racially, and also could be considered biased by sex. 
+
+If a model is trained on this type of data, the model will be considered biased. However, we want to consider that all models trained on similar data will typically be considered bias, because of a systematic bias. Take for example a project that John worked on in undergrad (Lloyd et al. 2017). We found that White participants held an innate bias against Black targets, such that White participants initially believed that Black targets were telling lies more often than Whites. Applied to the criminal justice system, it is more than likely that African-Americans are arrested more because of an innate, systematic bias against Blacks. In all actuality, Black defendants may be no more likely to recidivate than their White counterparts, but the justice system holds the capability to skew the data so that this is no longer the case. Models fit on data collected by the justice system (such as the data used in this project and in ProPublica's dataset) will reasonably be expected to be biased.
+
+Although our models were thus considered to be biased, the group believes QDA, with its low misclassification rates, stands the best chance to capture the trends in similar recidivism data.
+
+## Model Limitations
+Our model did not stand a chance against the cox model that Northpointe produced. Unfortunately, this may be due to the fact that we did not create our own evaluation metric such as Northpointe, but rather created a model based on the provided data. There are many different models and Data Mining methods that we did not use in this project, especially a cox model. It is entirely possible that QDA is not the best model to predict recidivism, but perhaps a cox model *is* the best for this type of data and prediction. We decided to focus on the specific Data Mining methods we have learned in class, with the exception of the Neural Network, to showcase what we have learned over the mini. Unfortunately, a cox model is something that we did not learn (or might have touched on briefly), so such a model was not included in our analysis and discussion.
+
+# Conclusion
+We undertook 8 different classification models in the task of classifying a specific dataset of individuals on whether or not they are predicted to recidivate after two years and also if they were predicted to violently recidivate. The COMPAS model has a misclassification problem -- Black defendants were more likely to be classified to recidivate than White defendants. We worked to narrow this misclassification problem, and found that QDA had the smallest misclassification rates for both two-year and violent recidivism at 8% and 4%, respectively. However, as all of us found in our personal analyses, the QDA model did suffer from bias -- it predicted Black defendants as recidivating more than White defendants, males more than females, and younger individuals than older individuals. However, we discuss that perhaps such biases are not a fault of the models, but an issue in the systematic bias that may be present in the justice system's dataset. Despite this, we believe that the QDA models best captured the trends that we observed in the datset, and we believe that QDA might be the best for predicting trends in recidivism rates.
+
+# Citations
+1. Angwin, Julia, Jeff Larson, Surya Mattu, Lauren Kirchner, and ProPublica. “Machine Bias.” ProPublica, May 23, 2016. https://www.propublica.org/article/machine-bias-risk-assessments-in-criminal-sentencing.
+
+2. Logan, Brent. “ROC Curves and the C Statistic” 19, no. 4 (2013): 5.
+
+3. Peter Flom and David Cassell, “Stopping Stepwise: Why Stepwise and Similar Selection Methods Are Bad, and What You Should Use” (Paper, March 23, 2013),
+https://web.archive.org/web/20130323174011/http://www.nesug.org/proceedings/nesug07/sa/sa07.pdf.
+
+4. Pan, Yuqing, Qing Mai, and Xin Zhang. “TULIP: A Toolbox for Linear Discriminant Analysis with Penalties.” ArXiv:1904.03469 [Stat], April 6, 2019. http://arxiv.org/abs/1904.03469.
+
+5. “Classification: LDA and QDA Approaches.” Accessed May 12, 2020. https://pages.mtu.edu/~shanem/psy5220/daily/Day12/classification.html.
+
+6. Glass Box. “Best Use of Train/Val/Test Splits, with Tips for Medical Data,” September 15, 2019. https://glassboxmedicine.com/2019/09/15/best-use-of-train-val-test-splits-with-tips-for-medical-data/.
+
+7. E. Paige Lloyd et al., “Black and White Lies: Race-Based Biases in Deception Judgments,” Psychological Science 28, no. 8 (August 1, 2017): 1125–36, https://doi.org/10.1177/0956797617705399.
+
+<a href="#top">Back to top</a>
