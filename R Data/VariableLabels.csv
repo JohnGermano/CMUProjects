@@ -1,0 +1,112 @@
+Category,Variable Name,Variable Label
+Factor,fpl,Poverty status
+Financial Satisfaction,SWB_1,I am satisfied with my life
+Financial Satisfaction,SWB_2,I am optimistic about my future
+Financial Satisfaction,SWB_3,"If I work hard today, I will be more
+successful in the future"
+Financial Well Being,FWBscore,Financial well-being scale score4
+Financial Knowledge,FSscore,Financial skill scale score5
+Financial Knowledge,SUBKNOWL1,How would you assess your overall financial knowledge?
+Financial Behavior,ACT1_1,I follow-through on my financial commitments to others
+Financial Behavior,ACT1_2,"I follow-through on financial goals I set for
+myself"
+Factor,FINGOALS,Do you have a current or recent financial goal?
+Financial Behavior,PROPPLAN_1,I consult my budget to see how much money I have left
+Financial Behavior,PROPPLAN_2,I actively consider the steps I need to take to stick to my budget
+Financial Behavior,PROPPLAN_3,I set financial goals for what I want to achieve with my money
+Financial Behavior,PROPPLAN_4,"I prepare a clear plan of action w/ detailed
+steps to achieve my financial goals"
+Financial Behavior,MANAGE1_1,Paid all your bills on time
+Financial Behavior,MANAGE1_2,Stayed within your budget or spending plan
+Financial Behavior,MANAGE1_3,Paid off credit card balance in full each month
+Financial Behavior,MANAGE1_4,"Checked your statements, bills and receipts to make sure there were no errors"
+Financial Behavior,SAVEHABIT,"Putting money into savings is a habit for
+me"
+Financial Behavior,FRUGALITY,"If I can re-use an item I already have, there’s no sense in buying something new"
+Financial Behavior,ASK1_1,I do my own research before making decisions involving money
+Financial Behavior,ASK1_2,I ask other people their opinions before making decisions involving money
+Financial Attitude,CHANGEABLE,Belief that ability to manage money is NOT changeable
+Financial Attitude,GOALCONF,Confidence in own ability to achieve financial goals
+Financial Knowledge,LMscore,Lusardi and Mitchell financial knowledge scale score6
+Financial Knowledge,KHscore,"Knoll and Houts financial knowledge scale
+score7"
+Financial Wellness,ENDSMEET,Difficulty of covering monthly expenses and bills
+Factor,HOUSING,"Which one of the following best describes
+your housing situation?"
+Factor,LIVINGARRANGEMENT,Current living arrangements
+Factor,HOUSERANGES,About how much do you pay for your home each month?
+Factor,MORTGAGE,What do you owe on your home today?
+Factor,SAVINGSRANGES,How much money do you have in savings today...?
+Financial Wellness,MATHARDSHIP_1,Worried whether food would run out before got money to buy more
+Financial Wellness,MATHARDSHIP_2,Food didn't last and didn't have money to get more
+Financial Wellness,MATHARDSHIP_3,Couldn't afford a place to live
+Financial Wellness,MATHARDSHIP_4,"Any household member couldn't afford to
+see doctor or go to hospital"
+Financial Wellness,MATHARDSHIP_5,Any household member stopped taking medication or took less due to costs
+Financial Wellness,MATHARDSHIP_6,Utilities shut off due to non-payment
+Financial Attitude,ABSORBSHOCK,"Confidence in ability to raise $2,000 in 30 days"
+Factor,FRAUD2,"Victim of financial fraud or attempted
+financial fraud in past 5 years"
+Factor,COVERCOSTS,"Course of action if income did not cover
+living costs"
+Factor,PAREDUC,"Highest level of education by
+person/people who raised respondent"
+Factor,FINSOC2_1,Discussed family financial matters with me
+Factor,FINSOC2_2,"Spoke to me about the importance of
+saving"
+Factor,FINSOC2_3,"Discussed how to establish a good credit
+rating"
+Factor,FINSOC2_4,Taught me how to be a smart shopper
+Factor,FINSOC2_5,"Taught me that my actions determine my
+success in life"
+Factor,FINSOC2_6,Provided me with a regular allowance
+Factor,FINSOC2_7,Provided me with a savings account
+Financial Attitude,MATERIALISM_2,"The things I own say a lot about how well
+I’m doing in life"
+Financial Attitude,MATERIALISM_3,I like to own things that impress people
+Factor,CONNECT,Psychological connectedness
+Factor,HEALTH,"In general, would you say your health is . . ."
+Factor,DISCOUNT,"If you had a choice, would you rather
+receive . . .?"
+Financial Behavior,SELFCONTROL_1,I often act without thinking through all the alternatives
+Financial Behavior,SELFCONTROL_2,I am good at resisting temptation
+Financial Behavior,SELFCONTROL_3,"I am able to work diligently toward long-
+term goals"
+Financial Attitude,OUTLOOK_1,There are services in this area to help me
+Financial Attitude,OUTLOOK_2,"There are good work opportunities for me,
+if I choose to take them"
+Factor,INTERCONNECTIONS_1,Parent
+Factor,INTERCONNECTIONS_2,Spouse/Partner
+Factor,INTERCONNECTIONS_3,"Extended family (e.g., uncle, aunt, cousins,
+grandparents)"
+Factor,INTERCONNECTIONS_4,Employer
+Factor,INTERCONNECTIONS_5,Friends/Co-workers
+Factor,INTERCONNECTIONS_6,Community or faith-based organizations
+Factor,INTERCONNECTIONS_7,Financial institution
+Factor,INTERCONNECTIONS_8,"Professional advisor, planner or
+counselor/coach"
+Factor,INTERCONNECTIONS_9,Government
+Factor,INTERCONNECTIONS_10,Respondent did not select any item in INTERCONNECTIONS bank
+Financial Attitude,PEM,Everyone has a fair chance at moving up the economic ladder
+Financial Satisfaction,HOUSESAT,"How satisfied are you with the place you
+live currently?"
+Factor,SOCSEC1,"Have you started receiving social security
+retirement benefits?"
+Factor,EMPLOY,Primary or only employment status
+Factor,Military_Status,Military status
+Factor,agecat,Age
+Factor,generation,Generation
+Factor,PPEDUC,Education (Highest Degree Received)
+Factor,PPETHM,Race / Ethnicity
+Factor,PPGENDER,Gender
+Factor,PPHHSIZE,Household Size
+Factor,PPINCIMP,Household Income
+Factor,PPMARIT,Marital Status
+Factor,PPT01,Presence of Household Members - Children 0-1
+Factor,PPT25,"Presence of Household Members -
+Children 2-5"
+Factor,PPT612,Presence of Household Members - Children 6-12
+Factor,PPT1317,"Presence of Household Members -
+Children 13-17"
+Factor,PPT18OV,Presence of Household Members - Adults 18+
+Weight,finalwt,Final weight
